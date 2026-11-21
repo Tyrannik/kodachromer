@@ -42,7 +42,11 @@ Optional **halation**, the red glow around bright lights that film without an an
   colour and grain, previewed live. Save it, restore Kodak defaults, or save variants as new films.
 - **Fast, smooth viewing:** live preview while dragging sliders; click for 100%, Ctrl+scroll up to
   800%, and drag to pan without lag.
-- **Non-destructive:** edits are saved next to each DNG and come back when you reopen the folder.
+- **Non-destructive, clean folders:** edits are kept in Kodachromer's own data folder (nothing is
+  written next to your photos) and follow a file even if you move or rename its folder.
+  Full **undo/redo** (Ctrl+Z / Ctrl+Y).
+- **Scanned or projected:** view the slide as a film scanner reads it (open shadows) or as it looks
+  projected on a screen (full density range, deep blacks, warm lamp, soft corner falloff).
 - **Batch work:** select several images, copy and paste settings, and export one, selected, edited or
   all images to JPG, with progress and cancel.
 - **Good exports:** full-resolution or resized JPGs with 4:4:4 colour and camera metadata (date,
@@ -77,13 +81,18 @@ not code-signed. Choose *More info → Run anyway*, or build it yourself from so
 | Zoom in and out (up to 800%) | **Ctrl + mouse wheel** |
 | Pan | drag the zoomed image |
 | Select several images | **Ctrl**-click, **Shift**-click, **Ctrl+A** |
-| Copy / paste settings | **Ctrl+C / Ctrl+V** (pastes to all selected) |
+| Copy / paste settings | **Ctrl+C / Ctrl+V** (pastes to all selected; a message confirms each) |
+| Undo / redo | **Ctrl+Z / Ctrl+Y** (or Ctrl+Shift+Z) |
 | Reset a slider | double-click it |
 
 ### Where things are saved
 
-- **Edits:** `L1001234.DNG.kodachromer.json`, a small file beside each DNG. Delete it to start over.
-- **App settings and tuned films:** `%APPDATA%\Kodachromer`.
+- **Edits:** `%APPDATA%\Kodachromer\edits`, one small file per image, matched to the DNG by its
+  contents, so they survive moving or renaming folders. (Exact copies of the same DNG share an
+  edit.) *Reset all* returns an image to unedited. Edit files left beside DNGs by 0.1.0-alpha.1 are
+  moved into the store automatically when you open the folder.
+- **App settings and tuned films:** `%APPDATA%\Kodachromer`. To keep everything elsewhere (for example
+  on a USB stick), set the environment variable `KODACHROMER_DATA_DIR` to a folder.
 - **Exports:** `<your folder>\exports` unless you choose another folder.
 
 ## How the Kodachrome 64 emulation works
@@ -111,7 +120,6 @@ There are more details in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 - **The first 100% view of an image** takes a second or two while the full-resolution frame renders.
 - **Not in exports yet:** aperture and lens name, which the M9 doesn't store in standard EXIF.
   Exports also carry no embedded ICC profile (they are sRGB).
-- **No undo:** use double-click reset or *Reset all*.
 - **Unsigned binaries,** hence the SmartScreen warning.
 
 ## Command line

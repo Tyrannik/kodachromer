@@ -35,6 +35,8 @@ pub struct FilmPreset {
     pub grain: Grain,
     #[serde(default)]
     pub halation: Halation,
+    #[serde(default)]
+    pub projection: Projection,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -217,11 +219,22 @@ pub struct FilmParams {
     pub highlights: f64,
     /// Halation strength, 0 (off) .. 1 (strong).
     pub halation: f64,
+    /// Scanned or projected slide.
+    pub output: OutputMode,
 }
 
 impl Default for FilmParams {
     fn default() -> Self {
-        Self { exposure_ev: 0.0, grain: 1.0, grain_size: 1.0, seed: 0, pixel_scale: 1.0, highlights: 0.0, halation: 0.0 }
+        Self {
+            exposure_ev: 0.0,
+            grain: 1.0,
+            grain_size: 1.0,
+            seed: 0,
+            pixel_scale: 1.0,
+            highlights: 0.0,
+            halation: 0.0,
+            output: OutputMode::Scan,
+        }
     }
 }
 
@@ -233,6 +246,41 @@ pub struct GrainFrame {
     pub origin: (usize, usize),
     /// Width of the full frame (the noise row stride).
     pub stride: usize,
+    /// Height of the full frame (for effects that depend on frame position,
+    /// such as projector light falloff).
+    pub height: usize,
+}
+
+/// How the finished slide is viewed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputMode {
+    /// Read by a film scanner: open shadows, scanner black point and balance.
+    #[default]
+    Scan,
+    /// Projected onto a screen: the slide's full density range, deep blacks
+    /// limited only by screen/room flare, lamp colour and corner falloff.
+    Projection,
+}
+
+/// Viewing conditions for [`OutputMode::Projection`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Projection {
+    /// Screen and room flare as a fraction of the brightest white; sets how
+    /// black the deepest shadows can get (0.003 ≈ 330:1 on-screen contrast).
+    pub flare: f64,
+    /// Colour of the projected light after the eye's adaptation (R, G, B):
+    /// tungsten lamps stay a little warm.
+    pub white_balance: [f64; 3],
+    /// Light falloff from the centre to the corners of the frame, in stops.
+    pub falloff_stops: f64,
+}
+
+impl Default for Projection {
+    fn default() -> Self {
+        Self { flare: 0.003, white_balance: [1.04, 1.0, 0.90], falloff_stops: 0.35 }
+    }
 }
 
 /// Highlight knee: one stop above mid-grey, in log10 exposure.
@@ -267,6 +315,10 @@ pub struct FilmModel {
     hal_sigma: f32,
     hal_threshold: f32,
     hal_tint: [f32; 3],
+    output: OutputMode,
+    proj_flare: f32,
+    proj_wb: [f32; 3],
+    proj_falloff: f32,
     grain_corr: f32,
     grain_blur: f32,
 }
@@ -352,6 +404,10 @@ impl FilmModel {
             hal_sigma: (p.halation.radius_px.max(0.5) / f) as f32,
             hal_threshold: (10f64.powf(grey_log_e - log_offset) * 2f64.powf(p.halation.threshold_stops)) as f32,
             hal_tint: p.halation.tint.map(|v| v as f32),
+            output: params.output,
+            proj_flare: p.projection.flare.max(0.0) as f32,
+            proj_wb: p.projection.white_balance.map(|v| v as f32),
+            proj_falloff: p.projection.falloff_stops.max(0.0) as f32,
             grain_corr: p.grain.correlation.clamp(0.0, 1.0) as f32,
             grain_blur: (full_blur / f) as f32,
         })
@@ -396,9 +452,28 @@ impl FilmModel {
         })
     }
 
+    /// Projection: integral density -> light on the screen, display-linear.
+    /// White is the lamp through clear film; the deepest black is set only by
+    /// screen/room flare. `light` is the lamp's relative brightness at this
+    /// point of the frame (corner falloff).
+    pub fn project(&self, d: [f32; 3], light: f32) -> [f32; 3] {
+        [0, 1, 2].map(|i| {
+            let (off, scale) = self.balance[i];
+            let t = 10f32.powf(-(d[i] * scale + off)) / self.t_white;
+            ((t * light + self.proj_flare) / (1.0 + self.proj_flare) * self.proj_wb[i]).clamp(0.0, 1.0)
+        })
+    }
+
+    /// Relative lamp brightness at a frame position (0..1 each axis):
+    /// a smooth radial falloff reaching `-falloff_stops` in the corners.
+    fn projector_light(&self, u: f32, v: f32) -> f32 {
+        let (x, y) = (2.0 * u - 1.0, 2.0 * v - 1.0);
+        2f32.powf(-self.proj_falloff * (x * x + y * y) * 0.5)
+    }
+
     /// Run the full model over an image. Output pixels are display-linear sRGB.
     pub fn apply(&self, img: &LinearImage, seed: u64) -> LinearImage {
-        self.apply_framed(img, seed, GrainFrame { origin: (0, 0), stride: img.width })
+        self.apply_framed(img, seed, GrainFrame { origin: (0, 0), stride: img.width, height: img.height })
     }
 
     /// As [`apply`], for an image that is a crop of a larger frame.
@@ -412,7 +487,21 @@ impl FilmModel {
         if self.grain_sigma > 0.0 {
             add_grain(&mut dens, img.width, img.height, self, seed, frame);
         }
-        let pixels = dens.par_iter().map(|&d| self.scan(d)).collect();
+        let pixels = match self.output {
+            OutputMode::Scan => dens.par_iter().map(|&d| self.scan(d)).collect(),
+            OutputMode::Projection => {
+                let (fw, fh) = (frame.stride.max(1) as f32, frame.height.max(1) as f32);
+                dens.par_iter()
+                    .enumerate()
+                    .map(|(i, &d)| {
+                        let (x, y) = (i % img.width, i / img.width);
+                        let u = (frame.origin.0 + x) as f32 / fw;
+                        let v = (frame.origin.1 + y) as f32 / fh;
+                        self.project(d, self.projector_light(u, v))
+                    })
+                    .collect()
+            }
+        };
         LinearImage { width: img.width, height: img.height, pixels, cct: img.cct }
     }
 
@@ -667,7 +756,7 @@ mod tests {
         // Crop with an apron wider than the grain blur, compare the interior.
         let (x0, y0, cw, ch) = (10, 8, 40, 30);
         let crop: Vec<[f32; 3]> = (0..ch).flat_map(|y| pixels[(y0 + y) * w + x0..(y0 + y) * w + x0 + cw].to_vec()).collect();
-        let part = m.apply_framed(&LinearImage { width: cw, height: ch, pixels: crop, cct: 5000.0 }, 3, GrainFrame { origin: (x0, y0), stride: w });
+        let part = m.apply_framed(&LinearImage { width: cw, height: ch, pixels: crop, cct: 5000.0 }, 3, GrainFrame { origin: (x0, y0), stride: w, height: h });
         let apron = 6;
         for y in apron..ch - apron {
             for x in apron..cw - apron {
@@ -692,6 +781,24 @@ mod tests {
             let hi = outs.iter().map(|o| o[c]).fold(f32::MIN, f32::max);
             assert!(hi - lo < 0.02, "channel {c} swings {lo}..{hi}: {outs:?}");
         }
+    }
+
+    #[test]
+    fn projection_has_deeper_shadows_and_corner_falloff() {
+        let p = FilmPreset::builtin("kodachrome64").unwrap();
+        let grey = p.exposure.grey_linear as f32;
+        let scan = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
+        let proj = FilmModel::new(&p, &FilmParams { grain: 0.0, output: OutputMode::Projection, ..Default::default() }).unwrap();
+        // Two stops under grey: the projector shows denser shadows than the
+        // scanner (no shadow lift), but blacks stay above zero (flare).
+        let dark = [grey * 0.25; 3];
+        let (s, pr) = (scan.scan(scan.densities(dark)), proj.project(proj.densities(dark), 1.0));
+        assert!(pr[1] < s[1], "projection shadows should be deeper: scan {s:?} vs projection {pr:?}");
+        let black = proj.project([5.0; 3], 1.0);
+        assert!(black.iter().all(|&c| c > 0.0 && c < 0.01), "flare-limited black: {black:?}");
+        // Corners are dimmer than the centre.
+        assert!(proj.projector_light(0.0, 0.0) < proj.projector_light(0.5, 0.5));
+        assert!((proj.projector_light(0.5, 0.5) - 1.0).abs() < 1e-6);
     }
 
     #[test]

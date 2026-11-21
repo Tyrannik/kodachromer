@@ -83,3 +83,13 @@ radius_px = 40.0
 threshold_stops = 1.75
 # Share of the reflected light reaching the red, green, blue layers.
 tint = [1.0, 0.22, 0.04]
+
+[projection]
+# Used when an image's Output is "Projected slide": the slide on a screen,
+# with its full density range instead of a scanner's lifted shadows.
+# Screen + room flare as a fraction of white; sets the deepest black (~330:1).
+flare = 0.003
+# Colour of the projected light after the eye adapts: tungsten stays a bit warm.
+white_balance = [1.04, 1.0, 0.90]
+# Light falloff from centre to corners, in stops.
+falloff_stops = 0.35

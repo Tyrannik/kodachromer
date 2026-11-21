@@ -9,10 +9,14 @@ use std::sync::OnceLock;
 pub const APP_NAME: &str = "Kodachromer";
 const LEGACY_DIR: &str = "M9Film";
 
-/// The app's data folder (not created here).
+/// The app's data folder (not created here). `KODACHROMER_DATA_DIR`
+/// overrides it (portable use, testing).
 pub fn data_dir() -> Option<PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
+        if let Some(dir) = std::env::var_os("KODACHROMER_DATA_DIR").filter(|d| !d.is_empty()) {
+            return Some(PathBuf::from(dir));
+        }
         let base = PathBuf::from(std::env::var_os("APPDATA")?);
         let dir = base.join(APP_NAME);
         let legacy = base.join(LEGACY_DIR);

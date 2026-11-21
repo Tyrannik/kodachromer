@@ -41,8 +41,16 @@ How Kodachromer is put together, for anyone reading or extending the code.
 - A preview worker thread renders three kinds of output: a downscaled *fit* preview (fast enough for
   live sliders), a quick *patch* of the visible area at 100%, and the *full* frame, which becomes a
   mipmapped GPU texture so panning and zooming (Ctrl+scroll up to 800%) never re-render.
-- Edits auto-save to `<name>.DNG.kodachromer.json` beside each DNG (pre-release `.m9film.json` files
-  are read and migrated on save). App settings and tuned films live in `%APPDATA%\Kodachromer`.
+- Edits auto-save to an edit store, `%APPDATA%\Kodachromer\edits\<fingerprint>.json`, keyed by a
+  content fingerprint (FNV-1a of file size + first 64 KiB) so they follow moved/renamed files.
+  Sidecars written beside DNGs by earlier versions are imported and removed. An edit equal to the
+  defaults is deleted (the image is unedited). `KODACHROMER_DATA_DIR` overrides the data folder.
+- Undo/redo: each commit (slider release, reset, paste, film change) pushes the previous edit onto
+  a per-image, per-session history. Toasts confirm copy, paste, undo and redo.
+- Output modes: *Scan* (scanner black point, gamma, balance) and *Projection* (transmittance shown
+  directly, screen/room flare as the black floor, lamp colour, radial falloff from frame position).
+- The wgpu device's uncaptured-error handler logs instead of panicking, so a bogus window size
+  during a resize can't crash the app.
 - "Tune look" edits a copy of the film preset live; Save writes a user override, which preview,
   thumbnails, export and the CLI all pick up.
 

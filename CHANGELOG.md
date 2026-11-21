@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Projected slide output** alongside the scanned look: full density range, flare-limited deep
+  blacks, warm lamp and corner falloff (tunable under *Tune look*).
+- **Edits no longer clutter photo folders:** they live in `%APPDATA%\Kodachromer\edits`, matched by
+  file content so they survive moves and renames. Old sidecar files are imported and removed
+  automatically. *Reset all* now returns an image to unedited.
+- **Undo / redo** per image (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z, toolbar buttons).
+- **Copy / paste settings** shortcuts are more robust, also use the system clipboard (paste
+  settings across sessions), and every action shows a short confirmation message.
+- **Fixed:** a crash when Windows or another tool reported an invalid window size during a resize.
+- `KODACHROMER_DATA_DIR` environment variable to keep app data elsewhere (portable use).
+
 ## 0.1.0-alpha.1 — first public alpha
 
 First release of Kodachromer, a Windows app that develops Leica M9 DNGs with a Kodachrome 64

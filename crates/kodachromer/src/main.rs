@@ -15,7 +15,7 @@ use std::thread;
 
 use eframe::egui;
 use kodachromer_core::develop::{self, CameraImage, Quality};
-use kodachromer_core::edit::{self, Edit, ExportOptions};
+use kodachromer_core::edit::{self, Edit, ExportOptions, OutputMode};
 use kodachromer_core::film::FilmPreset;
 use kodachromer_core::{output, presets, raw};
 use image::RgbImage;
@@ -355,6 +355,59 @@ fn spawn_batch(ctx: egui::Context, files: Vec<PathBuf>, out_dir: Option<PathBuf>
 
 // ---------------------------------------------------------------------- app
 
+#[derive(Default)]
+struct History {
+    undo: Vec<Edit>,
+    redo: Vec<Edit>,
+}
+
+/// Keyboard shortcuts read this frame.
+struct Keys {
+    left: bool,
+    right: bool,
+    before: bool,
+    esc: bool,
+    zoom: bool,
+    all: bool,
+    copy: bool,
+    paste: bool,
+    paste_text: Option<String>,
+    undo: bool,
+    redo: bool,
+}
+
+/// Settings as placed on the system clipboard (tagged so random text
+/// on the clipboard is never mistaken for settings).
+#[derive(Serialize, Deserialize)]
+struct ClipboardSettings {
+    kodachromer_settings: Edit,
+}
+
+/// Human-readable summary of what differs between two edits.
+fn describe_change(a: &Edit, b: &Edit) -> String {
+    let mut names = Vec::new();
+    let mut check = |changed: bool, name: &'static str| {
+        if changed {
+            names.push(name);
+        }
+    };
+    check(a.preset != b.preset, "film");
+    check(a.output != b.output, "output mode");
+    check(a.exposure_ev != b.exposure_ev, "exposure");
+    check(a.warmth != b.warmth, "warmth");
+    check(a.tint != b.tint, "tint");
+    check(a.highlights != b.highlights, "highlights");
+    check(a.halation != b.halation, "halation");
+    check(a.sharpen != b.sharpen, "sharpen");
+    check(a.grain != b.grain, "grain");
+    check(a.grain_size != b.grain_size, "grain size");
+    match names.len() {
+        0 => "no change".into(),
+        1..=3 => names.join(", "),
+        n => format!("{n} settings"),
+    }
+}
+
 struct FilmApp {
     settings: Settings,
     folder: Option<PathBuf>,
@@ -403,10 +456,21 @@ struct FilmApp {
     batch: Option<Batch>,
     status: String,
     show_about: bool,
+    /// Per-image undo/redo history for this session.
+    history: HashMap<PathBuf, History>,
+    /// Short confirmation shown over the preview: (message, shown at).
+    toast: Option<(String, std::time::Instant)>,
 }
 
 impl FilmApp {
     fn new(cc: &eframe::CreationContext<'_>, start_folder: Option<PathBuf>) -> Self {
+        // wgpu's default reaction to a validation error is to panic. Some window
+        // managers / tools briefly report nonsense window sizes during a resize
+        // (e.g. a negative height), which fails surface configuration; log it
+        // and carry on — the next valid resize reconfigures the surface.
+        if let Some(rs) = &cc.wgpu_render_state {
+            rs.device.on_uncaptured_error(Arc::new(|err| eprintln!("GPU error ignored: {err}")));
+        }
         let (preview_tx, preview_rx) = spawn_preview_worker(cc.egui_ctx.clone());
         let (thumb_tx, thumb_rx) = channel();
         let settings = Settings::load();
@@ -443,6 +507,8 @@ impl FilmApp {
             thumb_rx,
             batch: None,
             show_about: false,
+            history: HashMap::new(),
+            toast: None,
             status: "Open a folder of M9 DNGs to begin.".into(),
             settings,
         };
@@ -463,7 +529,13 @@ impl FilmApp {
             })
             .unwrap_or_default();
         files.sort();
-        self.edited = files.iter().filter(|p| edit::has_sidecar(p)).cloned().collect();
+        self.edited = files.iter().filter(|p| edit::has_edit(p)).cloned().collect();
+        // Loading imports any old sidecar files beside the DNGs into the edit
+        // store (and removes them), keeping the photo folder clean.
+        let imported = self.edited.iter().filter(|p| edit::has_legacy_sidecar(p)).filter(|p| edit::load(p).is_some()).count();
+        if imported > 0 {
+            self.show_toast(format!("Moved {imported} edit file(s) out of the photo folder into Kodachromer's edit store"));
+        }
         self.status = format!("{} DNGs in {}", files.len(), folder.display());
         self.thumbs.clear();
         self.thumb_gen.fetch_add(1, Ordering::SeqCst);
@@ -521,34 +593,97 @@ impl FilmApp {
         self.selected.and_then(|i| self.files.get(i))
     }
 
+    /// Commit the current edit: save it and record the previous state as an
+    /// undo step (one step per slider release / button press).
     fn save_if_changed(&mut self) {
         let Some(path) = self.current_path().cloned() else { return };
         if self.edit == self.saved_edit {
             return;
         }
-        match edit::save(&path, &self.edit) {
+        match self.persist(&path, &self.edit.clone()) {
             Ok(()) => {
+                let h = self.history.entry(path).or_default();
+                h.undo.push(self.saved_edit.clone());
+                h.redo.clear();
                 self.saved_edit = self.edit.clone();
-                self.edited.insert(path);
             }
             Err(e) => self.status = format!("Could not save edit: {e:#}"),
         }
     }
 
-    fn copy_settings(&mut self) {
-        self.clipboard = Some(self.edit.clone());
-        self.status = "Settings copied.".into();
+    /// Store an edit; an edit equal to the defaults is removed instead, so the
+    /// image counts as unedited again.
+    fn persist(&mut self, path: &Path, e: &Edit) -> anyhow::Result<()> {
+        if *e == Edit::default() {
+            edit::remove(path)?;
+            self.edited.remove(path);
+        } else {
+            edit::save(path, e)?;
+            self.edited.insert(path.to_path_buf());
+        }
+        Ok(())
     }
 
-    fn paste_settings(&mut self, ctx: &egui::Context) {
-        let Some(clip) = self.clipboard.clone() else { return };
+    fn can_undo(&self) -> bool {
+        self.current_path().and_then(|p| self.history.get(p)).is_some_and(|h| !h.undo.is_empty())
+    }
+
+    fn can_redo(&self) -> bool {
+        self.current_path().and_then(|p| self.history.get(p)).is_some_and(|h| !h.redo.is_empty())
+    }
+
+    /// Step the current image's history back (`redo = false`) or forward.
+    fn step_history(&mut self, redo: bool) {
+        self.save_if_changed();
+        let Some(path) = self.current_path().cloned() else { return };
+        let Some(h) = self.history.get_mut(&path) else { return };
+        let (from, to) = if redo { (&mut h.redo, &mut h.undo) } else { (&mut h.undo, &mut h.redo) };
+        let Some(target) = from.pop() else {
+            self.show_toast(if redo { "Nothing to redo".into() } else { "Nothing to undo".into() });
+            return;
+        };
+        to.push(self.saved_edit.clone());
+        let what = describe_change(&self.saved_edit, &target);
+        if let Err(e) = self.persist(&path, &target) {
+            self.status = format!("Could not save edit: {e:#}");
+        }
+        self.edit = target.clone();
+        self.saved_edit = target;
+        self.show_toast(format!("{} {what}", if redo { "Redo:" } else { "Undo:" }));
+    }
+
+    fn copy_settings(&mut self, ctx: &egui::Context) {
+        self.save_if_changed();
+        self.clipboard = Some(self.edit.clone());
+        // Also on the system clipboard, so settings survive a restart.
+        if let Ok(json) = serde_json::to_string(&ClipboardSettings { kodachromer_settings: self.edit.clone() }) {
+            ctx.copy_text(json);
+        }
+        let name = self.current_path().map(|p| file_name(p)).unwrap_or_default();
+        self.show_toast(format!("Copied settings from {name} — select images and press Ctrl+V to paste"));
+    }
+
+    fn paste_settings(&mut self, ctx: &egui::Context, from_text: Option<&str>) {
+        // Prefer settings pasted from the system clipboard (e.g. copied in an
+        // earlier session); fall back to the in-app clipboard.
+        let parsed = from_text.and_then(|t| serde_json::from_str::<ClipboardSettings>(t.trim()).ok()).map(|c| c.kodachromer_settings);
+        let Some(clip) = parsed.or_else(|| self.clipboard.clone()) else {
+            self.show_toast("Nothing to paste — copy an image's settings first (Ctrl+C)".into());
+            return;
+        };
         self.save_if_changed();
         let targets: Vec<PathBuf> = self.selection.iter().filter_map(|&i| self.files.get(i).cloned()).collect();
         let mut failed = 0;
         for path in &targets {
-            match edit::save(path, &clip) {
+            let previous = edit::load(path).unwrap_or_default();
+            if previous == clip {
+                continue;
+            }
+            match self.persist(path, &clip) {
                 Ok(()) => {
-                    self.edited.insert(path.clone());
+                    let h = self.history.entry(path.clone()).or_default();
+                    h.undo.push(previous);
+                    h.redo.clear();
                 }
                 Err(_) => failed += 1,
             }
@@ -559,10 +694,16 @@ impl FilmApp {
         }
         // Refresh the pasted thumbnails.
         spawn_thumbnails(ctx.clone(), targets.clone(), self.thumb_gen.clone(), self.thumb_tx.clone());
-        self.status = match failed {
-            0 => format!("Pasted settings to {} image(s).", targets.len()),
-            n => format!("Pasted to {}, {n} failed to save.", targets.len() - n),
-        };
+        let n = targets.len();
+        self.show_toast(match failed {
+            0 if n == 1 => format!("Pasted settings to {} (Ctrl+Z to undo)", file_name(&targets[0])),
+            0 => format!("Pasted settings to {n} images (Ctrl+Z undoes it per image)"),
+            f => format!("Pasted to {} of {n} images; {f} could not be saved", n - f),
+        });
+    }
+
+    fn show_toast(&mut self, message: String) {
+        self.toast = Some((message, std::time::Instant::now()));
     }
 
     fn start_export(&mut self, ctx: &egui::Context, files: Vec<PathBuf>) {
@@ -692,18 +833,36 @@ impl FilmApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        let (left, right, before, esc, z, all, copy, paste) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::ArrowLeft),
-                i.key_pressed(egui::Key::ArrowRight),
-                i.key_down(egui::Key::B),
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::Z),
-                i.modifiers.command && i.key_pressed(egui::Key::A),
-                i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
-                i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
-            )
+        let keys = ctx.input(|i| {
+            let cmd = i.modifiers.command;
+            let pressed = |k| i.key_pressed(k);
+            // Windows turns Ctrl+C / Ctrl+V into clipboard events, and may or
+            // may not also report the key itself: accept either.
+            let paste_text = i.events.iter().find_map(|e| match e {
+                egui::Event::Paste(t) => Some(t.clone()),
+                _ => None,
+            });
+            Keys {
+                left: pressed(egui::Key::ArrowLeft),
+                right: pressed(egui::Key::ArrowRight),
+                before: i.key_down(egui::Key::B),
+                esc: pressed(egui::Key::Escape),
+                zoom: !cmd && pressed(egui::Key::Z),
+                all: cmd && pressed(egui::Key::A),
+                copy: i.events.iter().any(|e| matches!(e, egui::Event::Copy)) || (cmd && pressed(egui::Key::C)),
+                paste: paste_text.is_some() || (cmd && pressed(egui::Key::V)),
+                paste_text,
+                undo: cmd && !i.modifiers.shift && pressed(egui::Key::Z),
+                redo: cmd && (pressed(egui::Key::Y) || (i.modifiers.shift && pressed(egui::Key::Z))),
+            }
         });
+        let Keys { left, right, before, esc, zoom: z, all, copy, paste, paste_text, undo, redo } = keys;
+        if undo {
+            self.step_history(false);
+        }
+        if redo {
+            self.step_history(true);
+        }
         if let Some(sel) = self.selected {
             if left && sel > 0 {
                 self.focus(sel - 1);
@@ -720,12 +879,13 @@ impl FilmApp {
         }
         if all {
             self.selection = (0..self.files.len()).collect();
+            self.show_toast(format!("Selected all {} images", self.files.len()));
         }
         if copy {
-            self.copy_settings();
+            self.copy_settings(ctx);
         }
         if paste {
-            self.paste_settings(ctx);
+            self.paste_settings(ctx, paste_text.as_deref());
         }
         self.show_before = before;
     }
@@ -767,7 +927,7 @@ impl FilmApp {
         egui::Window::new("About Kodachromer").open(&mut open).collapsible(false).resizable(false).default_width(420.0).show(ui.ctx(), |ui| {
             ui.heading(format!("Kodachromer {VERSION}"));
             ui.label("Film emulation for Leica M9 DNGs, starting with Kodachrome 64 (scanned-slide look).");
-            ui.label(egui::RichText::new("Alpha software: expect rough edges. Your DNGs are never modified; edits are saved beside them as .kodachromer.json files.").small());
+            ui.label(egui::RichText::new("Alpha software: expect rough edges. Your DNGs are never modified, and nothing is written into your photo folders: edits are kept in Kodachromer's own data folder.").small());
             ui.add_space(6.0);
             ui.hyperlink_to("Project page, issues and source", REPO_URL);
             ui.add_space(6.0);
@@ -859,6 +1019,18 @@ impl FilmApp {
             }
             ui.selectable_value(&mut self.edit.preset, None, "None (neutral)");
         });
+        ui.add_enabled_ui(self.edit.preset.is_some(), |ui| {
+            let label = |m: OutputMode| match m {
+                OutputMode::Scan => "Scanned slide",
+                OutputMode::Projection => "Projected slide",
+            };
+            egui::ComboBox::from_label("Output").selected_text(label(self.edit.output)).show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
+                    .on_hover_text("As a film scanner reads the slide: open shadows, scanner balance.");
+                ui.selectable_value(&mut self.edit.output, OutputMode::Projection, label(OutputMode::Projection))
+                    .on_hover_text("As the slide looks projected: full density range, deep blacks, warm lamp, soft corner falloff.");
+            });
+        });
         ui.add_space(8.0);
 
         ui.spacing_mut().slider_width = 160.0;
@@ -877,8 +1049,18 @@ impl FilmApp {
         ui.add_space(6.0);
 
         ui.horizontal(|ui| {
-            if ui.button("Reset all").clicked() {
+            if ui.add_enabled(self.can_undo(), egui::Button::new("↶ Undo")).on_hover_text("Ctrl+Z").clicked() {
+                self.step_history(false);
+            }
+            if ui.add_enabled(self.can_redo(), egui::Button::new("↷ Redo")).on_hover_text("Ctrl+Y or Ctrl+Shift+Z").clicked() {
+                self.step_history(true);
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Reset all").on_hover_text("Back to the film's defaults; the image no longer counts as edited").clicked() {
                 self.edit = Edit::default();
+                self.save_if_changed();
+                self.show_toast("Reset all settings (Ctrl+Z to undo)".into());
             }
             let before = ui.add(egui::Button::new("Hold for before").sense(egui::Sense::click_and_drag()));
             if before.is_pointer_button_down_on() {
@@ -904,14 +1086,14 @@ impl FilmApp {
         ui.heading("Settings");
         ui.horizontal(|ui| {
             if ui.button("Copy").on_hover_text("Ctrl+C").clicked() {
-                self.copy_settings();
+                self.copy_settings(&ctx);
             }
             let n = self.selection.len();
             let paste = ui
                 .add_enabled(self.clipboard.is_some(), egui::Button::new(format!("Paste to {n} selected")))
                 .on_hover_text("Ctrl+V. Select images with Ctrl/Shift-click or Ctrl+A.");
             if paste.clicked() {
-                self.paste_settings(&ctx);
+                self.paste_settings(&ctx, None);
             }
         });
 
@@ -966,6 +1148,11 @@ impl FilmApp {
             let mut colour = 1.0 - w.grain.correlation;
             slider64(ui, &mut colour, 0.0..=1.0, "Colour grain", 1.0 - r.grain.correlation);
             w.grain.correlation = 1.0 - colour;
+            ui.label(egui::RichText::new("Projection (for Projected slide output)").small());
+            slider64(ui, &mut w.projection.flare, 0.0..=0.02, "Screen black", r.projection.flare);
+            slider64(ui, &mut w.projection.falloff_stops, 0.0..=1.5, "Corner falloff", r.projection.falloff_stops);
+            slider64(ui, &mut w.projection.white_balance[0], 0.85..=1.15, "Lamp red", r.projection.white_balance[0]);
+            slider64(ui, &mut w.projection.white_balance[2], 0.75..=1.15, "Lamp blue", r.projection.white_balance[2]);
 
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
@@ -1277,6 +1464,7 @@ impl eframe::App for FilmApp {
             });
         }
         egui::CentralPanel::default().show(ui, |ui| self.preview(ui));
+        draw_toast(&ctx, &mut self.toast);
 
         // Save once the user lets go of a slider, and keep the preview current.
         if !ctx.input(|i| i.pointer.any_down()) {
@@ -1318,6 +1506,30 @@ fn slider(ui: &mut egui::Ui, enabled: bool, value: &mut f32, range: std::ops::Ra
     if enabled && double && pos.is_some_and(|p| resp.rect.contains(p)) {
         *value = default;
     }
+}
+
+/// Draw the toast (if any) near the bottom of the window, fading out.
+fn draw_toast(ctx: &egui::Context, toast: &mut Option<(String, std::time::Instant)>) {
+    const SHOW: f32 = 2.6;
+    const FADE: f32 = 0.5;
+    let Some((msg, at)) = toast.as_ref() else { return };
+    let age = at.elapsed().as_secs_f32();
+    if age > SHOW + FADE {
+        *toast = None;
+        return;
+    }
+    let alpha = if age < SHOW { 1.0 } else { 1.0 - (age - SHOW) / FADE };
+    egui::Area::new(egui::Id::unique("kodachromer-toast"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -40.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            ui.set_opacity(alpha);
+            egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
+                ui.label(egui::RichText::new(msg).size(15.0).strong());
+            });
+        });
+    ctx.request_repaint_after(std::time::Duration::from_millis(30));
 }
 
 fn badge(ui: &mut egui::Ui, rect: egui::Rect, text: &str) {

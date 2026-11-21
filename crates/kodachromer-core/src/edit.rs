@@ -1,6 +1,6 @@
-//! Non-destructive edits: the per-image settings saved in a JSON sidecar next
-//! to each DNG (`L1001234.DNG.kodachromer.json`), and the shared render path
-//! used by the app, the CLI and batch export.
+//! Non-destructive edits: the per-image settings (kept in the app's edit
+//! store, keyed by file content), and the shared render path used by the app,
+//! the CLI and batch export.
 
 use std::path::{Path, PathBuf};
 
@@ -9,11 +9,13 @@ use image::RgbImage;
 use serde::{Deserialize, Serialize};
 
 use crate::develop::{self, CameraImage, Quality};
+pub use crate::film::OutputMode;
 use crate::film::{FilmModel, FilmParams, FilmPreset, GrainFrame};
 use crate::{output, raw};
 
-pub const SIDECAR_SUFFIX: &str = ".kodachromer.json";
-/// Name used by pre-release builds; still read, replaced on save.
+/// Sidecar names used beside DNGs by 0.1.0-alpha.1 and pre-release builds;
+/// found files are imported into the edit store and removed.
+const SIDECAR_SUFFIX: &str = ".kodachromer.json";
 const LEGACY_SIDECAR_SUFFIX: &str = ".m9film.json";
 const EDIT_VERSION: u32 = 1;
 
@@ -39,6 +41,8 @@ pub struct Edit {
     pub sharpen: f32,
     /// Halation glow around bright highlights, 0 = off .. 1 = strong.
     pub halation: f32,
+    /// Scanned or projected slide.
+    pub output: OutputMode,
 }
 
 impl Default for Edit {
@@ -55,6 +59,7 @@ impl Default for Edit {
             sharpen: 0.3,
             // Kodachrome had an anti-halation backing, so off by default.
             halation: 0.0,
+            output: OutputMode::Scan,
         }
     }
 }
@@ -69,39 +74,141 @@ impl Edit {
     }
 }
 
+// ------------------------------------------------------------- edit store
+//
+// Edits live in the app's data folder (`%APPDATA%\Kodachromer\edits`), not
+// beside the photos. Each DNG is identified by a fingerprint of its contents
+// (file size + first 64 KiB, which hold the header and capture metadata), so
+// edits follow a file when its folder is moved or renamed. Sidecar files
+// written by earlier versions beside the DNG are imported and removed.
+
+/// A stored edit, with the file's last known location for reference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredEdit {
+    file: String,
+    edit: Edit,
+}
+
+pub fn store_dir() -> Option<PathBuf> {
+    crate::paths::data_dir().map(|d| d.join("edits"))
+}
+
 fn with_suffix(dng: &Path, suffix: &str) -> PathBuf {
     let mut name = dng.file_name().unwrap_or_default().to_os_string();
     name.push(suffix);
     dng.with_file_name(name)
 }
 
-pub fn sidecar_path(dng: &Path) -> PathBuf {
-    with_suffix(dng, SIDECAR_SUFFIX)
+/// Content fingerprint of a file (FNV-1a over its size and first 64 KiB),
+/// cached by path + size + modification time.
+pub fn fingerprint(dng: &Path) -> Option<String> {
+    use std::collections::HashMap;
+    use std::io::Read;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (u64, std::time::SystemTime, String)>>> = OnceLock::new();
+    let meta = std::fs::metadata(dng).ok()?;
+    let (len, mtime) = (meta.len(), meta.modified().ok()?);
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((l, m, fp)) = cache.lock().ok()?.get(dng) {
+        if *l == len && *m == mtime {
+            return Some(fp.clone());
+        }
+    }
+    let mut head = vec![0u8; 64 * 1024];
+    let mut f = std::fs::File::open(dng).ok()?;
+    let mut n = 0;
+    while n < head.len() {
+        match f.read(&mut head[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(_) => return None,
+        }
+    }
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in len.to_le_bytes().iter().chain(&head[..n]) {
+        h = (h ^ *b as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    let fp = format!("{h:016x}");
+    cache.lock().ok()?.insert(dng.to_path_buf(), (len, mtime, fp.clone()));
+    Some(fp)
 }
 
-/// True if the DNG has a saved edit (current or legacy sidecar name).
-pub fn has_sidecar(dng: &Path) -> bool {
-    sidecar_path(dng).exists() || with_suffix(dng, LEGACY_SIDECAR_SUFFIX).exists()
+fn store_file(dir: &Path, dng: &Path) -> Option<PathBuf> {
+    fingerprint(dng).map(|fp| dir.join(format!("{fp}.json")))
+}
+
+/// Import a sidecar left beside the DNG by an earlier version, then remove it.
+fn import_sidecar(dir: &Path, dng: &Path) -> Option<Edit> {
+    for suffix in [SIDECAR_SUFFIX, LEGACY_SIDECAR_SUFFIX] {
+        let side = with_suffix(dng, suffix);
+        let Ok(text) = std::fs::read_to_string(&side) else { continue };
+        let edit: Edit = serde_json::from_str(&text).ok()?;
+        // Only delete the old file once the edit is safely in the store.
+        if save_in(dir, dng, &edit).is_ok() {
+            let _ = std::fs::remove_file(&side);
+            let _ = std::fs::remove_file(with_suffix(dng, LEGACY_SIDECAR_SUFFIX));
+        }
+        return Some(edit);
+    }
+    None
+}
+
+pub fn load_in(dir: &Path, dng: &Path) -> Option<Edit> {
+    if let Some(path) = store_file(dir, dng) {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(stored) = serde_json::from_str::<StoredEdit>(&text) {
+                return Some(stored.edit);
+            }
+        }
+    }
+    import_sidecar(dir, dng)
+}
+
+pub fn save_in(dir: &Path, dng: &Path, edit: &Edit) -> Result<()> {
+    let path = store_file(dir, dng).with_context(|| format!("reading {}", dng.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let stored = StoredEdit { file: dng.display().to_string(), edit: edit.clone() };
+    std::fs::write(&path, serde_json::to_string_pretty(&stored)?).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Forget a DNG's edit (it renders with defaults and no longer counts as edited).
+pub fn remove_in(dir: &Path, dng: &Path) -> Result<()> {
+    if let Some(path) = store_file(dir, dng).filter(|p| p.exists()) {
+        std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn remove(dng: &Path) -> Result<()> {
+    match store_dir() {
+        Some(dir) => remove_in(&dir, dng),
+        None => Ok(()),
+    }
+}
+
+pub fn has_edit_in(dir: &Path, dng: &Path) -> bool {
+    store_file(dir, dng).is_some_and(|p| p.exists())
+        || with_suffix(dng, SIDECAR_SUFFIX).exists()
+        || with_suffix(dng, LEGACY_SIDECAR_SUFFIX).exists()
+}
+
+/// True if an old sidecar file still sits beside the DNG.
+pub fn has_legacy_sidecar(dng: &Path) -> bool {
+    with_suffix(dng, SIDECAR_SUFFIX).exists() || with_suffix(dng, LEGACY_SIDECAR_SUFFIX).exists()
 }
 
 /// The saved edit for a DNG, if it has one.
 pub fn load(dng: &Path) -> Option<Edit> {
-    let text = std::fs::read_to_string(sidecar_path(dng))
-        .or_else(|_| std::fs::read_to_string(with_suffix(dng, LEGACY_SIDECAR_SUFFIX)))
-        .ok()?;
-    serde_json::from_str(&text).ok()
+    load_in(&store_dir()?, dng)
 }
 
-/// Save an edit; a legacy-named sidecar is replaced by the current name.
 pub fn save(dng: &Path, edit: &Edit) -> Result<()> {
-    let path = sidecar_path(dng);
-    let text = serde_json::to_string_pretty(edit)?;
-    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
-    let legacy = with_suffix(dng, LEGACY_SIDECAR_SUFFIX);
-    if legacy.exists() {
-        let _ = std::fs::remove_file(legacy);
-    }
-    Ok(())
+    save_in(&store_dir().context("no app data folder (APPDATA is not set)")?, dng, edit)
+}
+
+/// True if the DNG has a saved edit.
+pub fn has_edit(dng: &Path) -> bool {
+    store_dir().is_some_and(|d| has_edit_in(&d, dng))
 }
 
 /// Stable grain seed from the file name, so re-renders match exactly.
@@ -131,7 +238,7 @@ pub fn render_with(
     pixel_scale: f64,
     seed: u64,
 ) -> Result<RgbImage> {
-    render_framed(cam, edit, preset_override, pixel_scale, seed, GrainFrame { origin: (0, 0), stride: cam.width })
+    render_framed(cam, edit, preset_override, pixel_scale, seed, GrainFrame { origin: (0, 0), stride: cam.width, height: cam.height })
 }
 
 fn render_framed(
@@ -155,6 +262,7 @@ fn render_framed(
                 grain_size: edit.grain_size as f64,
                 highlights: edit.highlights as f64,
                 halation: edit.halation as f64,
+                output: edit.output,
                 pixel_scale,
                 seed,
                 ..Default::default()
@@ -180,7 +288,7 @@ pub fn render_region(
     let (ax, ay) = (x.saturating_sub(APRON), y.saturating_sub(APRON));
     let (ax2, ay2) = ((x + w + APRON).min(cam.width), (y + h + APRON).min(cam.height));
     let crop = cam.crop(ax, ay, ax2 - ax, ay2 - ay);
-    let img = render_framed(&crop, edit, preset_override, 1.0, seed, GrainFrame { origin: (ax, ay), stride: cam.width })?;
+    let img = render_framed(&crop, edit, preset_override, 1.0, seed, GrainFrame { origin: (ax, ay), stride: cam.width, height: cam.height })?;
     let (w, h) = (w.min(crop.width - (x - ax)), h.min(crop.height - (y - ay)));
     Ok(image::imageops::crop_imm(&img, (x - ax) as u32, (y - ay) as u32, w as u32, h as u32).to_image())
 }
@@ -238,32 +346,58 @@ pub fn export_jpeg(path: &Path, edit: &Edit, out_dir: &Path, opts: &ExportOption
 mod tests {
     use super::*;
 
-    #[test]
-    fn sidecar_round_trip() {
-        let dir = std::env::temp_dir().join(format!("kodachromer-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let dng = dir.join("L1000001.DNG");
-        assert!(load(&dng).is_none());
-        let edit = Edit { exposure_ev: 0.5, warmth: -0.2, grain: 0.0, ..Default::default() };
-        save(&dng, &edit).unwrap();
-        assert_eq!(sidecar_path(&dng).file_name().unwrap(), "L1000001.DNG.kodachromer.json");
-        assert_eq!(load(&dng), Some(edit));
-        std::fs::remove_dir_all(&dir).unwrap();
+    /// A temp folder with a fake "DNG" of given content, and a store folder.
+    fn setup(tag: &str, content: &[u8]) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("kodachromer-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let photos = root.join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        let dng = photos.join("L1000001.DNG");
+        std::fs::write(&dng, content).unwrap();
+        (root.clone(), root.join("store"), dng)
     }
 
     #[test]
-    fn legacy_sidecar_is_read_and_migrated_on_save() {
-        let dir = std::env::temp_dir().join(format!("kodachromer-legacy-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let dng = dir.join("L1000002.DNG");
-        let legacy = dir.join("L1000002.DNG.m9film.json");
-        std::fs::write(&legacy, r#"{"exposure_ev": 2.0}"#).unwrap();
-        assert!(has_sidecar(&dng));
-        let e = load(&dng).unwrap();
-        assert_eq!(e.exposure_ev, 2.0);
-        save(&dng, &e).unwrap();
-        assert!(sidecar_path(&dng).exists() && !legacy.exists());
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn edits_round_trip_through_the_store_not_the_photo_folder() {
+        let (root, store, dng) = setup("store", b"fake dng one");
+        assert!(load_in(&store, &dng).is_none());
+        assert!(!has_edit_in(&store, &dng));
+        let edit = Edit { exposure_ev: 0.5, warmth: -0.2, grain: 0.0, ..Default::default() };
+        save_in(&store, &dng, &edit).unwrap();
+        assert_eq!(load_in(&store, &dng), Some(edit));
+        assert!(has_edit_in(&store, &dng));
+        // Nothing was written beside the photo.
+        assert_eq!(std::fs::read_dir(dng.parent().unwrap()).unwrap().count(), 1);
+        remove_in(&store, &dng).unwrap();
+        assert!(!has_edit_in(&store, &dng) && load_in(&store, &dng).is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn edits_follow_a_moved_file() {
+        let (root, store, dng) = setup("moved", b"fake dng two");
+        let edit = Edit { exposure_ev: 1.25, ..Default::default() };
+        save_in(&store, &dng, &edit).unwrap();
+        let moved_dir = root.join("elsewhere");
+        std::fs::create_dir_all(&moved_dir).unwrap();
+        let moved = moved_dir.join("renamed.DNG");
+        std::fs::rename(&dng, &moved).unwrap();
+        assert_eq!(load_in(&store, &moved), Some(edit));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn old_sidecars_are_imported_and_removed() {
+        for suffix in [SIDECAR_SUFFIX, LEGACY_SIDECAR_SUFFIX] {
+            let (root, store, dng) = setup("legacy", suffix.as_bytes());
+            let side = with_suffix(&dng, suffix);
+            std::fs::write(&side, r#"{"exposure_ev": 2.0}"#).unwrap();
+            assert!(has_edit_in(&store, &dng));
+            assert_eq!(load_in(&store, &dng).unwrap().exposure_ev, 2.0);
+            assert!(!side.exists(), "{suffix} sidecar should be removed after import");
+            assert_eq!(load_in(&store, &dng).unwrap().exposure_ev, 2.0, "now served from the store");
+            std::fs::remove_dir_all(&root).unwrap();
+        }
     }
 
     #[test]
