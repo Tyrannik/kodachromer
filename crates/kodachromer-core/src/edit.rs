@@ -1,6 +1,6 @@
 //! Non-destructive edits: the per-image settings saved in a JSON sidecar next
-//! to each DNG (`L1001234.DNG.m9film.json`), and the shared render path used
-//! by the app, the CLI and batch export.
+//! to each DNG (`L1001234.DNG.kodachromer.json`), and the shared render path
+//! used by the app, the CLI and batch export.
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +12,9 @@ use crate::develop::{self, CameraImage, Quality};
 use crate::film::{FilmModel, FilmParams, FilmPreset, GrainFrame};
 use crate::{output, raw};
 
-pub const SIDECAR_SUFFIX: &str = ".m9film.json";
+pub const SIDECAR_SUFFIX: &str = ".kodachromer.json";
+/// Name used by pre-release builds; still read, replaced on save.
+const LEGACY_SIDECAR_SUFFIX: &str = ".m9film.json";
 const EDIT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,22 +69,39 @@ impl Edit {
     }
 }
 
-pub fn sidecar_path(dng: &Path) -> PathBuf {
+fn with_suffix(dng: &Path, suffix: &str) -> PathBuf {
     let mut name = dng.file_name().unwrap_or_default().to_os_string();
-    name.push(SIDECAR_SUFFIX);
+    name.push(suffix);
     dng.with_file_name(name)
+}
+
+pub fn sidecar_path(dng: &Path) -> PathBuf {
+    with_suffix(dng, SIDECAR_SUFFIX)
+}
+
+/// True if the DNG has a saved edit (current or legacy sidecar name).
+pub fn has_sidecar(dng: &Path) -> bool {
+    sidecar_path(dng).exists() || with_suffix(dng, LEGACY_SIDECAR_SUFFIX).exists()
 }
 
 /// The saved edit for a DNG, if it has one.
 pub fn load(dng: &Path) -> Option<Edit> {
-    let text = std::fs::read_to_string(sidecar_path(dng)).ok()?;
+    let text = std::fs::read_to_string(sidecar_path(dng))
+        .or_else(|_| std::fs::read_to_string(with_suffix(dng, LEGACY_SIDECAR_SUFFIX)))
+        .ok()?;
     serde_json::from_str(&text).ok()
 }
 
+/// Save an edit; a legacy-named sidecar is replaced by the current name.
 pub fn save(dng: &Path, edit: &Edit) -> Result<()> {
     let path = sidecar_path(dng);
     let text = serde_json::to_string_pretty(edit)?;
-    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
+    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    let legacy = with_suffix(dng, LEGACY_SIDECAR_SUFFIX);
+    if legacy.exists() {
+        let _ = std::fs::remove_file(legacy);
+    }
+    Ok(())
 }
 
 /// Stable grain seed from the file name, so re-renders match exactly.
@@ -221,14 +240,29 @@ mod tests {
 
     #[test]
     fn sidecar_round_trip() {
-        let dir = std::env::temp_dir().join(format!("m9film-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kodachromer-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dng = dir.join("L1000001.DNG");
         assert!(load(&dng).is_none());
         let edit = Edit { exposure_ev: 0.5, warmth: -0.2, grain: 0.0, ..Default::default() };
         save(&dng, &edit).unwrap();
-        assert_eq!(sidecar_path(&dng).file_name().unwrap(), "L1000001.DNG.m9film.json");
+        assert_eq!(sidecar_path(&dng).file_name().unwrap(), "L1000001.DNG.kodachromer.json");
         assert_eq!(load(&dng), Some(edit));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_sidecar_is_read_and_migrated_on_save() {
+        let dir = std::env::temp_dir().join(format!("kodachromer-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dng = dir.join("L1000002.DNG");
+        let legacy = dir.join("L1000002.DNG.m9film.json");
+        std::fs::write(&legacy, r#"{"exposure_ev": 2.0}"#).unwrap();
+        assert!(has_sidecar(&dng));
+        let e = load(&dng).unwrap();
+        assert_eq!(e.exposure_ev, 2.0);
+        save(&dng, &e).unwrap();
+        assert!(sidecar_path(&dng).exists() && !legacy.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

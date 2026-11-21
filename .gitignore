@@ -1,4 +1,5 @@
 /target/
+/dist/
 
 # Personal photos and reference images: large, private, not for the repo.
 /samples/

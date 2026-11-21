@@ -1,4 +1,4 @@
-//! M9 Film — desktop app for developing Leica M9 DNGs with film looks.
+//! Kodachromer — desktop app for developing Leica M9 DNGs with film looks.
 //!
 //! Layout: library (left), preview (centre), edit + export panel (right).
 //! All decoding/rendering happens on worker threads; the UI only uploads
@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::egui;
-use film_core::develop::{self, CameraImage, Quality};
-use film_core::edit::{self, Edit, ExportOptions};
-use film_core::film::FilmPreset;
-use film_core::{output, presets, raw};
+use kodachromer_core::develop::{self, CameraImage, Quality};
+use kodachromer_core::edit::{self, Edit, ExportOptions};
+use kodachromer_core::film::FilmPreset;
+use kodachromer_core::{output, presets, raw};
 use image::RgbImage;
 use rawler::decoders::Orientation;
 use serde::{Deserialize, Serialize};
@@ -29,18 +29,24 @@ const THUMB_EDGE: usize = 240;
 const SIZES: &[(Option<u32>, &str)] =
     &[(None, "Full size"), (Some(4000), "4000 px"), (Some(3000), "3000 px"), (Some(2048), "2048 px"), (Some(1600), "1600 px")];
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
+
 fn main() -> eframe::Result {
     let start_folder = std::env::args().nth(1).map(PathBuf::from);
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 950.0]).with_title("M9 Film"),
-        ..Default::default()
-    };
-    eframe::run_native("M9 Film", options, Box::new(move |cc| Ok(Box::new(FilmApp::new(cc, start_folder)))))
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1500.0, 950.0])
+        .with_title(format!("Kodachromer {VERSION}"));
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon-256.png")) {
+        viewport = viewport.with_icon(icon);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    eframe::run_native("Kodachromer", options, Box::new(move |cc| Ok(Box::new(FilmApp::new(cc, start_folder)))))
 }
 
 // ------------------------------------------------------------- app settings
 
-/// App-wide preferences, stored in %APPDATA%\M9Film\settings.json.
+/// App-wide preferences, stored in %APPDATA%\Kodachromer\settings.json.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
@@ -52,7 +58,7 @@ struct Settings {
 
 impl Settings {
     fn path() -> Option<PathBuf> {
-        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("M9Film").join("settings.json"))
+        kodachromer_core::paths::data_dir().map(|d| d.join("settings.json"))
     }
     fn load() -> Self {
         Self::path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
@@ -396,6 +402,7 @@ struct FilmApp {
 
     batch: Option<Batch>,
     status: String,
+    show_about: bool,
 }
 
 impl FilmApp {
@@ -435,6 +442,7 @@ impl FilmApp {
             thumb_tx,
             thumb_rx,
             batch: None,
+            show_about: false,
             status: "Open a folder of M9 DNGs to begin.".into(),
             settings,
         };
@@ -455,7 +463,7 @@ impl FilmApp {
             })
             .unwrap_or_default();
         files.sort();
-        self.edited = files.iter().filter(|p| edit::sidecar_path(p).exists()).cloned().collect();
+        self.edited = files.iter().filter(|p| edit::has_sidecar(p)).cloned().collect();
         self.status = format!("{} DNGs in {}", files.len(), folder.display());
         self.thumbs.clear();
         self.thumb_gen.fetch_add(1, Ordering::SeqCst);
@@ -748,7 +756,33 @@ impl FilmApp {
                 ui.spinner();
             }
             ui.label(&self.status);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("About").clicked() {
+                    self.show_about = !self.show_about;
+                }
+                ui.label(egui::RichText::new(format!("v{VERSION}")).small().weak());
+            });
         });
+        let mut open = self.show_about;
+        egui::Window::new("About Kodachromer").open(&mut open).collapsible(false).resizable(false).default_width(420.0).show(ui.ctx(), |ui| {
+            ui.heading(format!("Kodachromer {VERSION}"));
+            ui.label("Film emulation for Leica M9 DNGs, starting with Kodachrome 64 (scanned-slide look).");
+            ui.label(egui::RichText::new("Alpha software: expect rough edges. Your DNGs are never modified; edits are saved beside them as .kodachromer.json files.").small());
+            ui.add_space(6.0);
+            ui.hyperlink_to("Project page, issues and source", REPO_URL);
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("Licensed under the GNU GPL v3 or later. Raw decoding by rawler (LGPL-2.1).").small());
+            ui.label(
+                egui::RichText::new(
+                    "Kodachrome and Kodak are trademarks of Eastman Kodak Company. Kodachromer is an independent project, \
+                     not affiliated with or endorsed by Kodak or Leica. Film curves are digitised from Kodak's published \
+                     technical data (E-55) for emulation purposes.",
+                )
+                .small()
+                .weak(),
+            );
+        });
+        self.show_about = open;
     }
 
     fn library(&mut self, ui: &mut egui::Ui) {

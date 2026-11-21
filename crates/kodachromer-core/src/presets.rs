@@ -1,6 +1,6 @@
 //! Film preset registry: built-in presets (compiled in) plus the user's own
 //! presets and tuned overrides, stored as TOML in
-//! `%APPDATA%\M9Film\presets\<id>.toml`. A user file with a built-in's id
+//! `%APPDATA%\Kodachromer\presets\<id>.toml`. A user file with a built-in's id
 //! overrides that built-in everywhere (preview, thumbnails, export, CLI).
 
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use crate::film::FilmPreset;
 pub const BUILTINS: &[(&str, &str)] = &[("kodachrome64", "Kodachrome 64")];
 
 pub fn user_dir() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("M9Film").join("presets"))
+    crate::paths::data_dir().map(|d| d.join("presets"))
 }
 
 fn user_file(id: &str) -> Option<PathBuf> {

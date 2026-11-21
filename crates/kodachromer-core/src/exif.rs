@@ -140,7 +140,7 @@ pub fn build_tiff(info: &ExifInfo, width: u32, height: u32) -> Vec<u8> {
     ifd0.ascii(0x010F, &info.make);
     ifd0.ascii(0x0110, &info.model);
     ifd0.short(0x0112, 1); // orientation: pixels are already upright
-    ifd0.ascii(0x0131, &Some(format!("M9 Film {}", env!("CARGO_PKG_VERSION"))));
+    ifd0.ascii(0x0131, &Some(format!("Kodachromer {}", env!("CARGO_PKG_VERSION"))));
     ifd0.ascii(0x0132, &info.date_time_original);
     ifd0.ascii(0x013B, &info.artist);
     ifd0.ascii(0x8298, &info.copyright);

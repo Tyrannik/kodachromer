@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/film-core", "crates/film-cli", "crates/film-app"]
+members = ["crates/kodachromer-core", "crates/kodachromer-cli", "crates/kodachromer"]
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Tyrannik/kodachromer"
+description = "Film emulation for Leica M9 DNGs, starting with Kodachrome 64"
 
 # Image processing is unusably slow without optimisation, even while developing.
 [profile.dev.package."*"]
@@ -8,3 +15,8 @@ opt-level = 3
 
 [profile.dev]
 opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

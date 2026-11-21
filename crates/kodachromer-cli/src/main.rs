@@ -1,19 +1,19 @@
 //! Command-line front end.
 //!
-//!   film-cli info   <files or folders...>
-//!   film-cli render <files or folders...> --out <folder> [--half] [--ev <stops>]
+//!   kodachromer-cli info   <files or folders...>
+//!   kodachromer-cli render <files or folders...> --out <folder> [--half] [--ev <stops>]
 //!                   [--preset kodachrome64 | <preset.toml>] [--grain <amount>]
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use film_core::develop::{self, DevelopParams, Quality};
-use film_core::edit::ExportOptions;
-use film_core::film::{FilmModel, FilmParams, FilmPreset};
-use film_core::{output, raw};
+use kodachromer_core::develop::{self, DevelopParams, Quality};
+use kodachromer_core::edit::ExportOptions;
+use kodachromer_core::film::{FilmModel, FilmParams, FilmPreset};
+use kodachromer_core::{output, raw};
 
-const USAGE: &str = "usage:\n  film-cli info <file.dng | folder>...\n  film-cli render <file.dng | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | <preset.toml>] [--grain <amount>]\n  film-cli export <file.dng | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each DNG's saved app edit; default output is <folder>/exports)";
+const USAGE: &str = "usage:\n  kodachromer-cli info <file.dng | folder>...\n  kodachromer-cli render <file.dng | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | <preset.toml>] [--grain <amount>]\n  kodachromer-cli export <file.dng | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each DNG's saved app edit; default output is <folder>/exports)";
 
 /// Batch export using the app's sidecar edits.
 fn export(args: &[String]) -> Result<()> {
@@ -38,14 +38,14 @@ fn export(args: &[String]) -> Result<()> {
     let files = collect_dngs(&inputs)?;
     let (mut ok, mut failed, mut skipped) = (0, 0, 0);
     for path in &files {
-        let saved = film_core::edit::load(path);
+        let saved = kodachromer_core::edit::load(path);
         if edited_only && saved.is_none() {
             skipped += 1;
             continue;
         }
         let dir = out_dir.clone().unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("exports"));
         let start = Instant::now();
-        match film_core::edit::export_jpeg(path, &saved.unwrap_or_default(), &dir, &opts) {
+        match kodachromer_core::edit::export_jpeg(path, &saved.unwrap_or_default(), &dir, &opts) {
             Ok(out) => {
                 ok += 1;
                 println!("{} -> {} ({} ms)", path.display(), out.display(), start.elapsed().as_millis());
@@ -145,7 +145,7 @@ fn render(args: &[String]) -> Result<()> {
                 preset = Some(if p.ends_with(".toml") {
                     FilmPreset::from_toml(&std::fs::read_to_string(p).with_context(|| format!("reading {p}"))?)?
                 } else {
-                    film_core::presets::load(p)?
+                    kodachromer_core::presets::load(p)?
                 });
             }
             _ => inputs.push(a.clone()),

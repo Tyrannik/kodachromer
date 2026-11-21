@@ -1,8 +1,0 @@
-[package]
-name = "film-cli"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-anyhow = "1.0.104"
-film-core = { version = "0.1.0", path = "../film-core" }
