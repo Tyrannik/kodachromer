@@ -63,6 +63,16 @@ pub struct Look {
     /// Scales log exposure around mid-grey: >1 steeper (more contrast).
     #[serde(default = "one")]
     pub contrast: f64,
+    /// Veiling flare added to every layer's exposure, as a fraction of the
+    /// mid-grey exposure. Physically real (lens + film) and it keeps
+    /// near-black sensor noise from being blown up by the logarithmic film
+    /// response into coloured speckles.
+    #[serde(default = "default_flare")]
+    pub flare: f64,
+}
+
+fn default_flare() -> f64 {
+    0.004
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +224,8 @@ pub struct FilmModel {
     log_offset: f32,
     grey_log_e: f32,
     contrast: f32,
+    /// Flare pedestal added to layer exposures (input units).
+    flare: f32,
     /// Slope of log exposure above the highlight knee (1 = unchanged).
     highlight_slope: f32,
     interimage: f32,
@@ -293,6 +305,8 @@ impl FilmModel {
             log_offset: log_offset as f32,
             grey_log_e: grey_log_e as f32,
             contrast: p.look.contrast.clamp(0.3, 3.0) as f32,
+            // Expressed relative to the exposure that lands on mid-grey.
+            flare: (p.look.flare.max(0.0) * 10f64.powf(grey_log_e - log_offset)) as f32,
             // -1 compresses everything above the knee to ~40% (about 2.5x more
             // scene range before white); +1 expands it to blow out sooner.
             highlight_slope: 2f32.powf(params.highlights.clamp(-1.0, 1.0) as f32 * 1.3),
@@ -315,14 +329,17 @@ impl FilmModel {
         let m = &self.to_layers;
         let log_e = [0, 1, 2].map(|i| {
             let e = m[i][0] * rgb[0] + m[i][1] * rgb[1] + m[i][2] * rgb[2];
-            let le = e.max(1e-7).log10() + self.log_offset;
-            let rel = (le - self.grey_log_e) * self.contrast;
+            // Flare pedestal, then a floor well below the film's maximum
+            // density (the curve is flat there, so nothing visible changes).
+            let le = (e.max(0.0) + self.flare).log10() + self.log_offset;
+            let rel = (le - self.grey_log_e).max(-3.0) * self.contrast;
             // Highlight shoulder: compress (or expand) exposure above the knee.
             let rel = if rel > HIGHLIGHT_KNEE { HIGHLIGHT_KNEE + (rel - HIGHLIGHT_KNEE) * self.highlight_slope } else { rel };
             self.grey_log_e + rel
         });
         let mean = (log_e[0] + log_e[1] + log_e[2]) / 3.0;
-        let a = [0, 1, 2].map(|i| self.analytical[i].eval(log_e[i] + self.interimage * (log_e[i] - mean)));
+        // Interimage push, limited so one starved layer can't swing the others.
+        let a = [0, 1, 2].map(|i| self.analytical[i].eval(log_e[i] + self.interimage * (log_e[i] - mean).clamp(-1.0, 1.0)));
         let d = &self.dyes;
         [0, 1, 2].map(|i| d[i][0] * a[0] + d[i][1] * a[1] + d[i][2] * a[2])
     }
@@ -561,6 +578,22 @@ mod tests {
                 let b = full.pixels[(y0 + y) * w + x0 + x];
                 assert!((0..3).all(|c| (a[c] - b[c]).abs() < 1e-5), "mismatch at ({x},{y})");
             }
+        }
+    }
+
+    /// Regression: in a dark saturated red, the green channel is tiny and
+    /// noisy. Noise there must not be blown up into bright speckles.
+    #[test]
+    fn near_black_channel_noise_is_not_amplified() {
+        let (_, m) = model(0.0);
+        let outs: Vec<[f32; 3]> = [0.0, 0.0001, 0.0003, 0.0006, -0.0002]
+            .iter()
+            .map(|&g| m.scan(m.densities([0.03, g, 0.0004])))
+            .collect();
+        for c in 0..3 {
+            let lo = outs.iter().map(|o| o[c]).fold(f32::MAX, f32::min);
+            let hi = outs.iter().map(|o| o[c]).fold(f32::MIN, f32::max);
+            assert!(hi - lo < 0.02, "channel {c} swings {lo}..{hi}: {outs:?}");
         }
     }
 
