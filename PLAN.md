@@ -3,6 +3,14 @@
 Native Windows desktop app in Rust that develops Leica M9 DNGs with film emulation.
 First stock: **Kodachrome 64**. More stocks later as data-only presets. iOS deferred.
 
+**Target look: a scanned Kodachrome 64 slide** (not projected): scanner-style highlight roll-off and
+lifted-but-dense shadows rather than a lightbox's full Dmax.
+
+## Status
+- Phase 1 (neutral raw render) — done: `film-cli render` develops M9 DNGs colorimetrically
+  (DNG dual-illuminant matrices, Bradford to D50, linear ProPhoto working space, PPG demosaic, sRGB JPEG).
+  Known gaps: no highlight reconstruction (channels clip at white), simple per-channel gamut clip on output.
+
 ## Requirements
 - Open M9 DNGs (compressed and uncompressed).
 - Film look with adjustable exposure, white balance, look strength, grain, vignette.
