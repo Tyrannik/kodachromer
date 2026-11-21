@@ -64,8 +64,9 @@ white_balance = [1.02, 1.0, 0.95]
 rms_granularity = 10.0
 # 0..1 share of grain common to all three layers (luminance-like).
 correlation = 0.85
-# Scanner/print blur applied to the grain, in pixels at full resolution.
-blur_px = 0.8
+# Grain clump size (blur of the noise), in pixels at full resolution. ~1.1 px
+# reads as fine dye clouds at a 4000 dpi scan rather than single-pixel noise.
+blur_px = 1.1
 # Overall multiplier. Pure aperture scaling of the datasheet figure ignores the
 # scanner's MTF and overstates grain at pixel level; 0.3 matches 4000 dpi
 # K64 scans by eye, 0.4 reads a little more clearly in finished images.

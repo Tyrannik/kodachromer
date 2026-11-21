@@ -151,6 +151,40 @@ impl CameraImage {
     }
 }
 
+/// Blur colour differences while keeping luminance detail intact.
+fn chroma_denoise(pixels: &mut [[f32; 3]], w: usize, h: usize, sigma: f32) {
+    let luma = |p: &[f32; 3]| (p[0] + 2.0 * p[1] + p[2]) * 0.25;
+    let mut cr: Vec<f32> = pixels.par_iter().map(|p| p[0] - luma(p)).collect();
+    let mut cb: Vec<f32> = pixels.par_iter().map(|p| p[2] - luma(p)).collect();
+    crate::film::blur(&mut cr, w, h, sigma);
+    crate::film::blur(&mut cb, w, h, sigma);
+    pixels.par_iter_mut().zip(cr.par_iter().zip(cb.par_iter())).for_each(|(p, (r, b))| {
+        let y = luma(p);
+        // Solve for G so that luma is preserved: y = (r' + 2g' + b') / 4.
+        let (rr, bb) = (y + r, y + b);
+        let g = (4.0 * y - rr - bb) * 0.5;
+        *p = [rr.max(0.0), g.max(0.0), bb.max(0.0)];
+    });
+}
+
+/// Unsharp mask on luminance (scene-linear), `amount` 0..1+, radius in px.
+pub fn sharpen(img: &mut LinearImage, amount: f32, sigma: f32) {
+    if amount <= 0.0 || sigma < 0.3 {
+        return;
+    }
+    let luma = |p: &[f32; 3]| (p[0] + 2.0 * p[1] + p[2]) * 0.25;
+    let y: Vec<f32> = img.pixels.par_iter().map(luma).collect();
+    let mut yb = y.clone();
+    crate::film::blur(&mut yb, img.width, img.height, sigma);
+    img.pixels.par_iter_mut().zip(y.par_iter().zip(yb.par_iter())).for_each(|(p, (&y, &b))| {
+        if y > 1e-6 {
+            // Sharpen in log space so the halo is proportional across tones.
+            let f = ((y.ln() - b.max(1e-6).ln()) * amount).clamp(-0.7, 0.7).exp();
+            *p = p.map(|c| c * f);
+        }
+    });
+}
+
 /// Levels, white balance and demosaic. `wb = None` uses the as-shot balance.
 pub fn demosaic(raw: &RawImage, wb: Option<[f32; 3]>, quality: Quality) -> Result<CameraImage> {
     let RawPhotometricInterpretation::Cfa(cfa_config) = &raw.photometric else {
@@ -192,10 +226,17 @@ pub fn demosaic(raw: &RawImage, wb: Option<[f32; 3]>, quality: Quality) -> Resul
 
     let cm_d65 = color_matrix(raw, Illuminant::D65).context("DNG has no D65 colour matrix")?;
     let cm_a = color_matrix(raw, Illuminant::A).unwrap_or(cm_d65);
+    let mut pixels = rgb.into_inner();
+    // Film has no colour noise; the M9's CCD has plenty. Smooth chroma only.
+    let chroma_sigma = match quality {
+        Quality::Full => 1.5,
+        Quality::Half => 0.75,
+    };
+    chroma_denoise(&mut pixels, dim.w, dim.h, chroma_sigma);
     Ok(CameraImage {
         width: dim.w,
         height: dim.h,
-        pixels: rgb.into_inner(),
+        pixels,
         wb,
         cm_a,
         cm_d65,

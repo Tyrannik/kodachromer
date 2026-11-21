@@ -28,6 +28,10 @@ lifted-but-dense shadows rather than a lightbox's full Dmax.
   (brightness, contrast, saturation, shadow lift, black depth, scanner RGB, grain strength/colour);
   Save updates the film everywhere (stored in %APPDATA%\M9Film\presets, Kodak defaults restorable),
   "Save as new" creates extra film variants; "Reference…" shows a real K64 scan beside the preview.
+- Performance & quality pass: zoom renders the whole frame once at full resolution (GPU pan/zoom,
+  Ctrl+scroll up to 800%) with a quick visible-area patch for slider changes; grain is generated from
+  absolute frame coordinates (preview crop == export), clumpier and cheaper; colour noise reduction;
+  luminance sharpening (Sharpen slider); per-image Highlights shoulder; JPEG 4:4:4 + optimised tables.
 
 ## Requirements
 - Open M9 DNGs (compressed and uncompressed).

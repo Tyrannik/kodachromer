@@ -15,7 +15,8 @@ cargo run -p film-app --release -- samples
 ```
 Edits are saved next to each DNG as `<name>.DNG.m9film.json`; exports go to `<folder>/exports`.
 
-Shortcuts: ←/→ next/previous, hold B before/after, click image or Z for 100% (drag to pan, Esc to fit),
+Shortcuts: ←/→ next/previous, hold B before/after, click image or Z for 100%, Ctrl+scroll to zoom (up to 800%),
+drag to pan, Esc or click to fit,
 Ctrl+A select all, Ctrl+C / Ctrl+V copy/paste settings, double-click a slider to reset it.
 
 ## Command line

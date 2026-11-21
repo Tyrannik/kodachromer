@@ -181,13 +181,28 @@ pub struct FilmParams {
     /// Size of one output pixel relative to a full-resolution M9 pixel
     /// (2.0 for half-size previews), so grain looks the same at any size.
     pub pixel_scale: f64,
+    /// Highlight shoulder, -1 (hold back / recover) .. +1 (open up).
+    pub highlights: f64,
 }
 
 impl Default for FilmParams {
     fn default() -> Self {
-        Self { exposure_ev: 0.0, grain: 1.0, grain_size: 1.0, seed: 0, pixel_scale: 1.0 }
+        Self { exposure_ev: 0.0, grain: 1.0, grain_size: 1.0, seed: 0, pixel_scale: 1.0, highlights: 0.0 }
     }
 }
+
+/// Where an image sits inside the full frame, so grain is generated from
+/// absolute frame coordinates: a crop rendered on its own gets exactly the
+/// same grain as the same pixels in a full render.
+#[derive(Debug, Clone, Copy)]
+pub struct GrainFrame {
+    pub origin: (usize, usize),
+    /// Width of the full frame (the noise row stride).
+    pub stride: usize,
+}
+
+/// Highlight knee: one stop above mid-grey, in log10 exposure.
+const HIGHLIGHT_KNEE: f32 = 0.30;
 
 /// M9 sensor pixel pitch on a 36 mm wide frame, in micrometres.
 const M9_PIXEL_UM: f64 = 36_000.0 / 5212.0;
@@ -199,6 +214,8 @@ pub struct FilmModel {
     log_offset: f32,
     grey_log_e: f32,
     contrast: f32,
+    /// Slope of log exposure above the highlight knee (1 = unchanged).
+    highlight_slope: f32,
     interimage: f32,
     analytical: [Lut; 3],
     dyes: [[f32; 3]; 3],
@@ -276,6 +293,9 @@ impl FilmModel {
             log_offset: log_offset as f32,
             grey_log_e: grey_log_e as f32,
             contrast: p.look.contrast.clamp(0.3, 3.0) as f32,
+            // -1 compresses everything above the knee to ~40% (about 2.5x more
+            // scene range before white); +1 expands it to blow out sooner.
+            highlight_slope: 2f32.powf(params.highlights.clamp(-1.0, 1.0) as f32 * 1.3),
             interimage: p.look.interimage as f32,
             analytical,
             dyes: p.dyes.matrix.map(|r| r.map(|v| v as f32)),
@@ -296,7 +316,10 @@ impl FilmModel {
         let log_e = [0, 1, 2].map(|i| {
             let e = m[i][0] * rgb[0] + m[i][1] * rgb[1] + m[i][2] * rgb[2];
             let le = e.max(1e-7).log10() + self.log_offset;
-            self.grey_log_e + (le - self.grey_log_e) * self.contrast
+            let rel = (le - self.grey_log_e) * self.contrast;
+            // Highlight shoulder: compress (or expand) exposure above the knee.
+            let rel = if rel > HIGHLIGHT_KNEE { HIGHLIGHT_KNEE + (rel - HIGHLIGHT_KNEE) * self.highlight_slope } else { rel };
+            self.grey_log_e + rel
         });
         let mean = (log_e[0] + log_e[1] + log_e[2]) / 3.0;
         let a = [0, 1, 2].map(|i| self.analytical[i].eval(log_e[i] + self.interimage * (log_e[i] - mean)));
@@ -316,9 +339,14 @@ impl FilmModel {
 
     /// Run the full model over an image. Output pixels are display-linear sRGB.
     pub fn apply(&self, img: &LinearImage, seed: u64) -> LinearImage {
+        self.apply_framed(img, seed, GrainFrame { origin: (0, 0), stride: img.width })
+    }
+
+    /// As [`apply`], for an image that is a crop of a larger frame.
+    pub fn apply_framed(&self, img: &LinearImage, seed: u64, frame: GrainFrame) -> LinearImage {
         let mut dens: Vec<[f32; 3]> = img.pixels.par_iter().map(|&p| self.densities(p)).collect();
         if self.grain_sigma > 0.0 {
-            add_grain(&mut dens, img.width, img.height, self, seed);
+            add_grain(&mut dens, img.width, img.height, self, seed, frame);
         }
         let pixels = dens.par_iter().map(|&d| self.scan(d)).collect();
         LinearImage { width: img.width, height: img.height, pixels, cct: img.cct }
@@ -344,17 +372,46 @@ fn splitmix(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
+/// Approximately normal noise (unit variance) from one hash: the sum of four
+/// 16-bit uniforms (Irwin–Hall). Much cheaper than Box–Muller and
+/// indistinguishable once blurred into grain.
 fn gaussian(seed: u64, i: u64) -> f32 {
-    let h1 = splitmix(seed ^ i.wrapping_mul(0xD6E8_FEB8_6659_FD93));
-    let h2 = splitmix(h1);
-    let u1 = ((h1 >> 11) as f64 + 0.5) / (1u64 << 53) as f64;
-    let u2 = (h2 >> 11) as f64 / (1u64 << 53) as f64;
-    ((-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()) as f32
+    let h = splitmix(seed ^ i.wrapping_mul(0xD6E8_FEB8_6659_FD93));
+    let sum = (h & 0xFFFF) + ((h >> 16) & 0xFFFF) + ((h >> 32) & 0xFFFF) + (h >> 48);
+    (sum as f32 / 65535.0 - 2.0) * 3f32.sqrt()
+}
+
+/// One grain field for an image placed at `frame` within the full frame.
+fn noise_field(seed: u64, w: usize, h: usize, frame: GrainFrame) -> Vec<f32> {
+    (0..w * h)
+        .into_par_iter()
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            let gi = (frame.origin.1 + y) * frame.stride + frame.origin.0 + x;
+            gaussian(seed, gi as u64)
+        })
+        .collect()
+}
+
+/// Blurred, unit-variance grain with a clumpy (dye-cloud) character: large
+/// excursions are emphasised so grain reads as irregular clusters rather
+/// than even digital noise.
+fn grain_field(seed: u64, w: usize, h: usize, blur_sigma: f32, frame: GrainFrame) -> Vec<f32> {
+    let mut f = noise_field(seed, w, h, frame);
+    let gain = blur(&mut f, w, h, blur_sigma);
+    // v * (a + b|v|) has std sqrt(a^2 + 2ab*E|v|^3 + 3b^2) for unit normal v.
+    let (a, b) = (0.6f32, 0.4f32);
+    let norm = 1.0 / (a * a + 2.0 * a * b * 1.5958 + 3.0 * b * b).sqrt();
+    f.par_iter_mut().for_each(|v| {
+        let n = *v / gain;
+        *v = n * (a + b * n.abs()) * norm;
+    });
+    f
 }
 
 /// Separable Gaussian blur of a single-channel field, returning the factor by
 /// which it reduced the standard deviation of white noise.
-fn blur(field: &mut [f32], w: usize, h: usize, sigma: f32) -> f32 {
+pub(crate) fn blur(field: &mut [f32], w: usize, h: usize, sigma: f32) -> f32 {
     if sigma < 0.05 {
         return 1.0;
     }
@@ -384,28 +441,27 @@ fn blur(field: &mut [f32], w: usize, h: usize, sigma: f32) -> f32 {
     s * s
 }
 
-fn add_grain(dens: &mut [[f32; 3]], w: usize, h: usize, model: &FilmModel, seed: u64) {
-    let n = w * h;
-    let fields: Vec<Vec<f32>> = (0..4u64)
-        .into_par_iter()
-        .map(|c| {
-            let s = splitmix(seed.wrapping_add(c));
-            let mut f: Vec<f32> = (0..n as u64).into_par_iter().map(|i| gaussian(s, i)).collect();
-            let gain = blur(&mut f, w, h, model.grain_blur);
-            f.par_iter_mut().for_each(|v| *v /= gain);
-            f
-        })
-        .collect();
-    let shared = model.grain_corr.sqrt();
-    let own = (1.0 - model.grain_corr).sqrt();
+fn add_grain(dens: &mut [[f32; 3]], w: usize, h: usize, model: &FilmModel, seed: u64, frame: GrainFrame) {
+    let shared_w = model.grain_corr.sqrt();
+    let own_w = (1.0 - model.grain_corr).sqrt();
     let sigma = model.grain_sigma;
-    dens.par_iter_mut().enumerate().for_each(|(i, d)| {
+    // Granularity is specified at density 1.0 and grows with density. Work
+    // one field at a time to keep memory to a single extra plane.
+    let scale = |d: f32| sigma * d.max(0.05).sqrt();
+    let shared = grain_field(splitmix(seed.wrapping_add(3)), w, h, model.grain_blur, frame);
+    dens.par_iter_mut().zip(shared.par_iter()).for_each(|(d, n)| {
+        let base = [scale(d[0]), scale(d[1]), scale(d[2])];
         for c in 0..3 {
-            // Granularity is specified at density 1.0 and grows with density.
-            let s = sigma * d[c].max(0.05).sqrt();
-            d[c] += s * (shared * fields[3][i] + own * fields[c][i]);
+            d[c] += base[c] * shared_w * n;
         }
     });
+    drop(shared);
+    if own_w > 0.0 {
+        for c in 0..3 {
+            let own = grain_field(splitmix(seed.wrapping_add(c as u64)), w, h, model.grain_blur, frame);
+            dens.par_iter_mut().zip(own.par_iter()).for_each(|(d, n)| d[c] += scale(d[c]) * own_w * n);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -486,5 +542,42 @@ mod tests {
         let img = LinearImage { width: 16, height: 16, pixels: vec![[0.1, 0.1, 0.1]; 256], cct: 5000.0 };
         assert_eq!(m.apply(&img, 7).pixels, m.apply(&img, 7).pixels);
         assert_ne!(m.apply(&img, 7).pixels, m.apply(&img, 8).pixels);
+    }
+
+    #[test]
+    fn cropped_render_has_identical_grain() {
+        let (_, m) = model(1.0);
+        let (w, h) = (64, 48);
+        let pixels: Vec<[f32; 3]> = (0..w * h).map(|i| [0.05 + (i % w) as f32 * 0.003, 0.1, 0.08]).collect();
+        let full = m.apply(&LinearImage { width: w, height: h, pixels: pixels.clone(), cct: 5000.0 }, 3);
+        // Crop with an apron wider than the grain blur, compare the interior.
+        let (x0, y0, cw, ch) = (10, 8, 40, 30);
+        let crop: Vec<[f32; 3]> = (0..ch).flat_map(|y| pixels[(y0 + y) * w + x0..(y0 + y) * w + x0 + cw].to_vec()).collect();
+        let part = m.apply_framed(&LinearImage { width: cw, height: ch, pixels: crop, cct: 5000.0 }, 3, GrainFrame { origin: (x0, y0), stride: w });
+        let apron = 6;
+        for y in apron..ch - apron {
+            for x in apron..cw - apron {
+                let a = part.pixels[y * cw + x];
+                let b = full.pixels[(y0 + y) * w + x0 + x];
+                assert!((0..3).all(|c| (a[c] - b[c]).abs() < 1e-5), "mismatch at ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn highlights_control_holds_back_and_opens_up() {
+        let p = FilmPreset::builtin("kodachrome64").unwrap();
+        let bright = (p.exposure.grey_linear * 6.0) as f32; // ~2.6 stops over grey
+        let out = |h: f64| {
+            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, highlights: h, ..Default::default() }).unwrap();
+            m.scan(m.densities([bright; 3]))[1]
+        };
+        assert!(out(-1.0) < out(0.0) - 0.05, "recovery should darken highlights");
+        assert!(out(1.0) > out(0.0), "positive should brighten highlights");
+        // Mid-grey is untouched.
+        let grey = p.exposure.grey_linear as f32;
+        let m0 = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
+        let m1 = FilmModel::new(&p, &FilmParams { grain: 0.0, highlights: -1.0, ..Default::default() }).unwrap();
+        assert_eq!(m0.scan(m0.densities([grey; 3])), m1.scan(m1.densities([grey; 3])));
     }
 }

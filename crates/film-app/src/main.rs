@@ -67,20 +67,50 @@ impl Settings {
 
 // ------------------------------------------------------------------ preview
 
-/// A 100% view request: centre in displayed-image coordinates (0..1) and the
-/// size of the viewport in physical pixels.
+/// Zoomed view: `level` is physical screen pixels per full-resolution image
+/// pixel (1.0 = 100%); `center` is in upright image coordinates (0..1).
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct ZoomReq {
+struct View {
+    level: f32,
     center: [f32; 2],
-    view_px: [u32; 2],
 }
+
+const MAX_ZOOM: f32 = 8.0;
+
+/// What a preview job should produce.
+#[derive(Debug, Clone, PartialEq)]
+enum Mode {
+    /// Downscaled whole-image preview (plus neutral "before" and thumbnail).
+    Fit,
+    /// Full-resolution render for zooming. `region` (upright 0..1 x0,y0,x1,y1)
+    /// is rendered first as a quick patch; `before` asks for the neutral render.
+    Detail { region: [f32; 4], before: bool },
+}
+
+/// Identifies a preview request; the detail region is excluded so panning
+/// never triggers a re-render.
+#[derive(Debug, Clone, PartialEq)]
+enum ModeKey {
+    Fit,
+    Detail { before: bool },
+}
+
+type RenderKey = (Edit, Option<FilmPreset>);
 
 struct PreviewJob {
     path: PathBuf,
     edit: Edit,
-    zoom: Option<ZoomReq>,
     /// Unsaved tuned preset to preview instead of the stored one.
     preset: Option<FilmPreset>,
+    mode: Mode,
+}
+
+enum PreviewOut {
+    Fit { after: egui::ColorImage, before: egui::ColorImage, thumb: egui::ColorImage, full_size: [usize; 2] },
+    Patch { image: egui::ColorImage, region: [f32; 4] },
+    Full { image: egui::ColorImage, before: bool },
+    /// Nothing new to send (result already delivered earlier).
+    Done,
 }
 
 /// Live tuning of a film preset's look (applies to every image using it).
@@ -94,11 +124,8 @@ struct Tune {
 
 struct PreviewResult {
     path: PathBuf,
-    edit: Edit,
-    zoom: Option<ZoomReq>,
-    preset: Option<FilmPreset>,
-    /// (after, before, full-res oriented size for zoom maths)
-    result: Result<(RgbImage, RgbImage, [usize; 2]), String>,
+    key: RenderKey,
+    out: Result<PreviewOut, String>,
 }
 
 /// Map a point on the upright (displayed) image to sensor coordinates,
@@ -116,41 +143,85 @@ fn display_to_sensor(o: Orientation, u: f32, v: f32) -> (f32, f32) {
     }
 }
 
+/// Inverse of [`display_to_sensor`].
+fn sensor_to_display(o: Orientation, s: f32, t: f32) -> (f32, f32) {
+    match o {
+        Orientation::Normal | Orientation::Unknown => (s, t),
+        Orientation::HorizontalFlip => (1.0 - s, t),
+        Orientation::Rotate180 => (1.0 - s, 1.0 - t),
+        Orientation::VerticalFlip => (s, 1.0 - t),
+        Orientation::Rotate90 => (1.0 - t, s),
+        Orientation::Rotate270 => (t, 1.0 - s),
+        Orientation::Transpose => (t, s),
+        Orientation::Transverse => (1.0 - t, 1.0 - s),
+    }
+}
+
 fn swaps_axes(o: Orientation) -> bool {
     matches!(o, Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Transpose | Orientation::Transverse)
 }
 
-/// Renders previews. Caches the downscaled image for fit view and, once
-/// zoom is used, the full-resolution demosaic, so slider changes only re-run
-/// the cheap colour and film stages.
+/// Bounding box of an axis-aligned rect after mapping its corners.
+fn map_rect(r: [f32; 4], f: impl Fn(f32, f32) -> (f32, f32)) -> [f32; 4] {
+    let (a, b) = (f(r[0], r[1]), f(r[2], r[3]));
+    [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)]
+}
+
+/// Renders previews on a background thread.
+///
+/// * Fit: from a cached half-size, downscaled image (fast for slider moves).
+/// * Detail: from a cached full-resolution demosaic. First a quick patch of
+///   the visible area, then — unless a newer request has arrived — the whole
+///   frame, which the UI keeps as a texture so panning and zooming are free.
 fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<PreviewResult>) {
     let (job_tx, job_rx) = channel::<PreviewJob>();
-    let (res_tx, res_rx) = channel();
+    let (res_tx, res_rx) = channel::<PreviewResult>();
     thread::spawn(move || {
-        let mut fit: Option<(PathBuf, CameraImage, f64, Orientation)> = None;
+        let mut fit: Option<(PathBuf, CameraImage, f64, Orientation, [usize; 2])> = None;
         let mut full: Option<(PathBuf, CameraImage, Orientation)> = None;
-        while let Ok(mut job) = job_rx.recv() {
+        // Last full renders delivered, so repeat requests cost nothing.
+        let mut full_after: Option<(PathBuf, RenderKey)> = None;
+        let mut full_before: Option<(PathBuf, Edit)> = None;
+        let mut next: Option<PreviewJob> = None;
+        loop {
+            let mut job = match next.take() {
+                Some(j) => j,
+                None => match job_rx.recv() {
+                    Ok(j) => j,
+                    Err(_) => break,
+                },
+            };
             while let Ok(newer) = job_rx.try_recv() {
                 job = newer; // only the newest request matters
             }
+            let key: RenderKey = (job.edit.clone(), job.preset.clone());
             let seed = edit::seed_for(&job.path);
-            let neutral = Edit { preset: None, ..job.edit.clone() };
-            let result = (|| -> anyhow::Result<(RgbImage, RgbImage, [usize; 2])> {
-                match job.zoom {
-                    None => {
-                        if fit.as_ref().is_none_or(|c| c.0 != job.path) {
-                            let raw_image = raw::load(&job.path)?;
-                            let cam = develop::demosaic(&raw_image, None, Quality::Half)?;
-                            let (small, f) = cam.downscale_to(PREVIEW_EDGE);
-                            fit = Some((job.path.clone(), small, 2.0 * f as f64, raw_image.orientation));
-                        }
-                        let (_, cam, scale, o) = fit.as_ref().expect("filled above");
-                        let after = output::apply_orientation(edit::render_with(cam, &job.edit, job.preset.as_ref(), *scale, seed)?, *o);
-                        let before = output::apply_orientation(edit::render(cam, &neutral, *scale, seed)?, *o);
-                        let size = [after.width() as usize, after.height() as usize];
-                        Ok((after, before, size))
+            let send = |out: anyhow::Result<PreviewOut>| {
+                let ok = res_tx.send(PreviewResult { path: job.path.clone(), key: key.clone(), out: out.map_err(|e| format!("{e:#}")) }).is_ok();
+                ctx.request_repaint();
+                ok
+            };
+            let alive = match &job.mode {
+                Mode::Fit => send((|| {
+                    if fit.as_ref().is_none_or(|c| c.0 != job.path) {
+                        let raw_image = raw::load(&job.path)?;
+                        let cam = develop::demosaic(&raw_image, None, Quality::Half)?;
+                        let (w, h) = raw_image.crop_area.map_or((raw_image.width, raw_image.height), |r| (r.d.w, r.d.h));
+                        let full_size = if swaps_axes(raw_image.orientation) { [h, w] } else { [w, h] };
+                        let (small, f) = cam.downscale_to(PREVIEW_EDGE);
+                        fit = Some((job.path.clone(), small, 2.0 * f as f64, raw_image.orientation, full_size));
                     }
-                    Some(z) => {
+                    let (_, cam, scale, o, full_size) = fit.as_ref().expect("filled above");
+                    let after = output::apply_orientation(edit::render_with(cam, &job.edit, job.preset.as_ref(), *scale, seed)?, *o);
+                    let neutral = Edit { preset: None, ..job.edit.clone() };
+                    let before = output::apply_orientation(edit::render(cam, &neutral, *scale, seed)?, *o);
+                    let th = (THUMB_EDGE * after.height() as usize / after.width() as usize) as u32;
+                    let thumb = image::imageops::thumbnail(&after, THUMB_EDGE as u32, th);
+                    Ok(PreviewOut::Fit { after: to_color(&after), before: to_color(&before), thumb: to_color(&thumb), full_size: *full_size })
+                })()),
+                Mode::Detail { region, before } => {
+                    let mut alive = true;
+                    let result = (|| -> anyhow::Result<()> {
                         if full.as_ref().is_none_or(|c| c.0 != job.path) {
                             full = None; // free the previous image first
                             let raw_image = raw::load(&job.path)?;
@@ -158,24 +229,58 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
                             full = Some((job.path.clone(), cam, raw_image.orientation));
                         }
                         let (_, cam, o) = full.as_ref().expect("filled above");
-                        let (s, t) = display_to_sensor(*o, z.center[0], z.center[1]);
-                        let (vw, vh) = if swaps_axes(*o) { (z.view_px[1], z.view_px[0]) } else { (z.view_px[0], z.view_px[1]) };
-                        let (vw, vh) = ((vw as usize).min(cam.width), (vh as usize).min(cam.height));
-                        let x = ((s * cam.width as f32) as isize - vw as isize / 2).clamp(0, (cam.width - vw) as isize) as usize;
-                        let y = ((t * cam.height as f32) as isize - vh as isize / 2).clamp(0, (cam.height - vh) as isize) as usize;
-                        let crop = cam.crop(x, y, vw, vh);
-                        let after = output::apply_orientation(edit::render_with(&crop, &job.edit, job.preset.as_ref(), 1.0, seed)?, *o);
-                        let before = output::apply_orientation(edit::render(&crop, &neutral, 1.0, seed)?, *o);
-                        let size = if swaps_axes(*o) { [cam.height, cam.width] } else { [cam.width, cam.height] };
-                        Ok((after, before, size))
+                        if *before {
+                            let neutral = Edit { preset: None, ..job.edit.clone() };
+                            if full_before.as_ref().is_some_and(|(p, e)| *p == job.path && *e == neutral) {
+                                alive = send(Ok(PreviewOut::Done));
+                                return Ok(());
+                            }
+                            let img = output::apply_orientation(edit::render(cam, &neutral, 1.0, seed)?, *o);
+                            alive = send(Ok(PreviewOut::Full { image: to_color(&img), before: true }));
+                            full_before = Some((job.path.clone(), neutral));
+                            return Ok(());
+                        }
+                        if full_after.as_ref().is_some_and(|(p, k)| *p == job.path && *k == key) {
+                            alive = send(Ok(PreviewOut::Done));
+                            return Ok(());
+                        }
+                        // Quick patch of what's on screen (skipped when most of
+                        // the frame is visible anyway).
+                        let s = map_rect(*region, |u, v| display_to_sensor(*o, u, v));
+                        let (x0, y0) = ((s[0] * cam.width as f32) as usize, (s[1] * cam.height as f32) as usize);
+                        let (x1, y1) = ((s[2] * cam.width as f32).ceil() as usize, (s[3] * cam.height as f32).ceil() as usize);
+                        let (x1, y1) = (x1.min(cam.width), y1.min(cam.height));
+                        if x1 > x0 && y1 > y0 && (x1 - x0) * (y1 - y0) < cam.width * cam.height * 2 / 5 {
+                            let patch = edit::render_region(cam, (x0, y0, x1 - x0, y1 - y0), &job.edit, job.preset.as_ref(), seed)?;
+                            let patch = output::apply_orientation(patch, *o);
+                            let rendered = [
+                                x0 as f32 / cam.width as f32,
+                                y0 as f32 / cam.height as f32,
+                                x1 as f32 / cam.width as f32,
+                                y1 as f32 / cam.height as f32,
+                            ];
+                            let region = map_rect(rendered, |s, t| sensor_to_display(*o, s, t));
+                            alive = send(Ok(PreviewOut::Patch { image: to_color(&patch), region }));
+                            // A newer request (e.g. the slider moved on) wins over the full render.
+                            if let Ok(newer) = job_rx.try_recv() {
+                                next = Some(newer);
+                                return Ok(());
+                            }
+                        }
+                        let img = output::apply_orientation(edit::render_with(cam, &job.edit, job.preset.as_ref(), 1.0, seed)?, *o);
+                        alive = send(Ok(PreviewOut::Full { image: to_color(&img), before: false }));
+                        full_after = Some((job.path.clone(), key.clone()));
+                        Ok(())
+                    })();
+                    if let Err(e) = result {
+                        alive = send(Err(e));
                     }
+                    alive
                 }
-            })()
-            .map_err(|e| format!("{e:#}"));
-            if res_tx.send(PreviewResult { path: job.path, edit: job.edit, zoom: job.zoom, preset: job.preset, result }).is_err() {
+            };
+            if !alive {
                 break;
             }
-            ctx.request_repaint();
         }
     });
     (job_tx, res_rx)
@@ -257,7 +362,7 @@ struct FilmApp {
 
     edit: Edit,
     saved_edit: Edit,
-    last_requested: Option<(PathBuf, Edit, Option<ZoomReq>, Option<FilmPreset>)>,
+    last_requested: Option<(PathBuf, RenderKey, ModeKey)>,
 
     /// (id, name) of available film presets.
     preset_list: Vec<(String, String)>,
@@ -271,11 +376,16 @@ struct FilmApp {
     fit_after: Option<egui::TextureHandle>,
     fit_before: Option<egui::TextureHandle>,
     fit_path: Option<PathBuf>,
-    zoom: Option<ZoomReq>,
-    zoom_after: Option<egui::TextureHandle>,
-    zoom_before: Option<egui::TextureHandle>,
-    /// Upright full-resolution size of the current image (known after first zoom).
+    zoom: Option<View>,
+    /// Full-resolution render (and the edit it shows), for zooming/panning on the GPU.
+    full_tex: Option<(egui::TextureHandle, RenderKey)>,
+    full_before_tex: Option<egui::TextureHandle>,
+    /// Quick render of the visible area for the newest edit: (texture, upright rect, key).
+    patch: Option<(egui::TextureHandle, [f32; 4], RenderKey)>,
+    /// Upright full-resolution size of the current image.
     full_size: Option<[usize; 2]>,
+    /// Visible part of the image in zoom view (upright 0..1), for patch requests.
+    visible: [f32; 4],
     rendering: bool,
     show_before: bool,
 
@@ -313,9 +423,11 @@ impl FilmApp {
             fit_before: None,
             fit_path: None,
             zoom: None,
-            zoom_after: None,
-            zoom_before: None,
+            full_tex: None,
+            full_before_tex: None,
+            patch: None,
             full_size: None,
+            visible: [0.0, 0.0, 1.0, 1.0],
             rendering: false,
             show_before: false,
             thumbs: HashMap::new(),
@@ -373,8 +485,9 @@ impl FilmApp {
         self.save_if_changed();
         self.selected = Some(index);
         self.zoom = None;
-        self.zoom_after = None;
-        self.zoom_before = None;
+        self.full_tex = None;
+        self.full_before_tex = None;
+        self.patch = None;
         self.full_size = None;
         self.edit = edit::load(&self.files[index]).unwrap_or_default();
         self.saved_edit = self.edit.clone();
@@ -461,43 +574,80 @@ impl FilmApp {
             .as_ref()
             .filter(|t| Some(&t.id) == self.edit.preset.as_ref() && t.working != t.saved)
             .map(|t| t.working.clone());
-        let key = (path.clone(), self.edit.clone(), self.zoom, preset.clone());
+        let render_key: RenderKey = (self.edit.clone(), preset.clone());
+        let mode_key = match self.zoom {
+            None => ModeKey::Fit,
+            Some(_) => ModeKey::Detail { before: self.show_before },
+        };
+        let key = (path.clone(), render_key, mode_key.clone());
         if self.last_requested.as_ref() == Some(&key) {
             return;
         }
         self.last_requested = Some(key);
         self.rendering = true;
-        let _ = self.preview_tx.send(PreviewJob { path, edit: self.edit.clone(), zoom: self.zoom, preset });
+        let mode = match mode_key {
+            ModeKey::Fit => Mode::Fit,
+            ModeKey::Detail { before } => Mode::Detail { region: self.visible, before },
+        };
+        let _ = self.preview_tx.send(PreviewJob { path, edit: self.edit.clone(), preset, mode });
+    }
+
+    /// The render key the screen should currently show.
+    fn current_key(&self) -> Option<&RenderKey> {
+        self.last_requested.as_ref().map(|k| &k.1)
     }
 
     fn poll_workers(&mut self, ctx: &egui::Context) {
         while let Ok(res) = self.preview_rx.try_recv() {
-            let current = self.current_path() == Some(&res.path);
-            let latest = self.last_requested.as_ref().is_some_and(|k| k.1 == res.edit && k.2 == res.zoom && k.3 == res.preset);
-            match res.result {
-                Ok((after, before, size)) if current => {
-                    let opts = egui::TextureOptions::LINEAR;
-                    if res.zoom.is_some() {
-                        self.full_size = Some(size);
-                        self.zoom_after = Some(ctx.load_texture("zoom-after", to_color(&after), opts));
-                        self.zoom_before = Some(ctx.load_texture("zoom-before", to_color(&before), opts));
-                    } else {
-                        let h = (THUMB_EDGE * after.height() as usize / after.width() as usize) as u32;
-                        let thumb = image::imageops::thumbnail(&after, THUMB_EDGE as u32, h);
-                        self.thumbs.insert(res.path.clone(), ctx.load_texture(thumb_name(&res.path), to_color(&thumb), opts));
-                        self.fit_after = Some(ctx.load_texture("after", to_color(&after), opts));
-                        self.fit_before = Some(ctx.load_texture("before", to_color(&before), opts));
-                        self.fit_path = Some(res.path.clone());
+            if self.current_path() != Some(&res.path) {
+                continue;
+            }
+            let latest = self.current_key() == Some(&res.key);
+            let lin = egui::TextureOptions::LINEAR;
+            // Full-res: crisp pixels when magnified, mipmapped when zoomed out.
+            let full_opts = egui::TextureOptions {
+                magnification: egui::TextureFilter::Nearest,
+                minification: egui::TextureFilter::Linear,
+                mipmap_mode: Some(egui::TextureFilter::Linear),
+                ..lin
+            };
+            match res.out {
+                Ok(PreviewOut::Fit { after, before, thumb, full_size }) => {
+                    self.thumbs.insert(res.path.clone(), ctx.load_texture(thumb_name(&res.path), thumb, lin));
+                    self.fit_after = Some(ctx.load_texture("after", after, lin));
+                    self.fit_before = Some(ctx.load_texture("before", before, lin));
+                    self.fit_path = Some(res.path.clone());
+                    self.full_size = Some(full_size);
+                    if latest {
+                        self.rendering = false;
+                    }
+                }
+                Ok(PreviewOut::Patch { image, region }) if latest => {
+                    self.patch = Some((ctx.load_texture("patch", image, full_opts), region, res.key));
+                }
+                Ok(PreviewOut::Full { image, before: false }) => {
+                    self.full_tex = Some((ctx.load_texture("full", image, full_opts), res.key.clone()));
+                    if self.patch.as_ref().is_some_and(|p| p.2 == res.key) {
+                        self.patch = None;
                     }
                     if latest {
                         self.rendering = false;
                     }
                 }
-                Err(e) if current => {
+                Ok(PreviewOut::Full { image, before: true }) => {
+                    self.full_before_tex = Some(ctx.load_texture("full-before", image, full_opts));
+                    self.rendering = false;
+                }
+                Ok(PreviewOut::Done) => {
+                    if latest {
+                        self.rendering = false;
+                    }
+                }
+                Ok(PreviewOut::Patch { .. }) => {}
+                Err(e) => {
                     self.status = format!("Could not render {}: {e}", file_name(&res.path));
                     self.rendering = false;
                 }
-                _ => {}
             }
         }
         let generation = self.thumb_gen.load(Ordering::SeqCst);
@@ -520,6 +670,14 @@ impl FilmApp {
                 self.batch = None;
             }
         }
+    }
+
+    /// Fit <-> 100% at the centre of what's shown.
+    fn toggle_100(&mut self) {
+        self.zoom = match self.zoom {
+            Some(_) => None,
+            None => Some(View { level: 1.0, center: [0.5, 0.5] }),
+        };
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
@@ -550,10 +708,7 @@ impl FilmApp {
             self.zoom = None;
         }
         if z {
-            self.zoom = match self.zoom {
-                Some(_) => None,
-                None => Some(ZoomReq { center: [0.5, 0.5], view_px: [1, 1] }),
-            };
+            self.toggle_100();
         }
         if all {
             self.selection = (0..self.files.len()).collect();
@@ -679,6 +834,8 @@ impl FilmApp {
         slider(ui, true, &mut e.exposure_ev, -2.0..=2.0, 0.05, "Exposure (EV)", d.exposure_ev);
         slider(ui, true, &mut e.warmth, -1.0..=1.0, 0.01, "Warmth", d.warmth);
         slider(ui, true, &mut e.tint, -1.0..=1.0, 0.01, "Tint", d.tint);
+        slider(ui, film, &mut e.highlights, -1.0..=1.0, 0.01, "Highlights", d.highlights);
+        slider(ui, true, &mut e.sharpen, 0.0..=1.0, 0.01, "Sharpen", d.sharpen);
         slider(ui, film, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain);
         slider(ui, film, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size);
         ui.label(egui::RichText::new("Double-click a slider to reset it.").small().weak());
@@ -694,14 +851,11 @@ impl FilmApp {
             }
             let zoom_label = if self.zoom.is_some() { "Fit" } else { "100%" };
             if ui.button(zoom_label).clicked() {
-                self.zoom = match self.zoom {
-                    Some(_) => None,
-                    None => Some(ZoomReq { center: [0.5, 0.5], view_px: [1, 1] }),
-                };
+                self.toggle_100();
             }
         });
         ui.label(
-            egui::RichText::new("Click the image to zoom to 100% there, drag to pan, Esc to fit. Hold B to compare, ←/→ to move.")
+            egui::RichText::new("Click the image for 100%, Ctrl+scroll to zoom (up to 800%), drag to pan, Esc to fit. Hold B to compare, ←/→ to move.")
                 .small()
                 .weak(),
         );
@@ -947,60 +1101,120 @@ impl FilmApp {
             return;
         }
 
-        if let Some(z) = &mut self.zoom {
-            // Keep the requested crop matched to the viewport in physical pixels.
-            z.view_px = [(rect.width() * ppp) as u32, (rect.height() * ppp) as u32];
-            let resp = ui.interact(rect, ui.scope_id().with("zoom"), egui::Sense::click_and_drag());
-            if resp.dragged() {
-                if let Some([fw, fh]) = self.full_size {
-                    let d = resp.drag_delta() * ppp;
-                    z.center[0] = (z.center[0] - d.x / fw as f32).clamp(0.0, 1.0);
-                    z.center[1] = (z.center[1] - d.y / fh as f32).clamp(0.0, 1.0);
-                }
-            } else if resp.clicked() {
-                self.zoom = None;
-            }
-            let tex = if self.show_before { self.zoom_before.as_ref() } else { self.zoom_after.as_ref() };
-            match tex {
-                Some(tex) => {
-                    let size = tex.size_vec2() / ppp;
-                    ui.put(egui::Rect::from_center_size(rect.center(), size), egui::Image::new((tex.id(), size)));
-                }
-                None => {
-                    ui.put(egui::Rect::from_center_size(rect.center(), egui::vec2(40.0, 40.0)), egui::Spinner::new());
-                }
-            }
-            badge(ui, rect, if self.show_before { "100% · BEFORE" } else { "100%" });
+        let stale = self.fit_path.as_ref() != self.current_path();
+        let (Some([fw, fh]), false) = (self.full_size, stale) else {
+            ui.centered_and_justified(|ui| ui.spinner());
             return;
+        };
+        let (fw, fh) = (fw as f32, fh as f32);
+        let fit_level = (rect.width() * ppp / fw).min(rect.height() * ppp / fh);
+
+        let resp = ui.interact(rect, ui.scope_id().with("preview"), egui::Sense::click_and_drag());
+        let pointer = resp.hover_pos();
+        // Our own click test (press + release in the preview with little
+        // movement): egui's drag-sensing click detection misses fast clicks.
+        let click_pos = ui.input(|i| i.pointer.interact_pos());
+        let clicked = ui.input(|i| i.pointer.primary_clicked()) && click_pos.is_some_and(|p| rect.contains(p)) && resp.hovered();
+        let zoom_delta = if resp.hovered() { ui.input(|i| i.zoom_delta()) } else { 1.0 };
+
+        // Current view (fit is just the lowest zoom level, centred).
+        let mut view = self.zoom.unwrap_or(View { level: fit_level, center: [0.5, 0.5] });
+        let size = |level: f32| egui::vec2(fw * level / ppp, fh * level / ppp);
+
+        // Ctrl+scroll / pinch: zoom around the cursor.
+        if (zoom_delta - 1.0).abs() > 1e-4 {
+            let p = pointer.unwrap_or(rect.center());
+            let s0 = size(view.level);
+            let u = view.center[0] + (p.x - rect.center().x) / s0.x;
+            let v = view.center[1] + (p.y - rect.center().y) / s0.y;
+            let new_level = (view.level * zoom_delta).clamp(fit_level, MAX_ZOOM.max(fit_level));
+            let s1 = size(new_level);
+            view = View { level: new_level, center: [u - (p.x - rect.center().x) / s1.x, v - (p.y - rect.center().y) / s1.y] };
+            self.zoom = (new_level > fit_level * 1.001).then_some(view);
         }
 
-        let tex = if self.show_before { self.fit_before.as_ref() } else { self.fit_after.as_ref() };
-        let stale = self.fit_path.as_ref() != self.current_path();
-        match tex {
-            Some(tex) if !stale => {
-                let s = tex.size_vec2();
-                let scale = (rect.width() / s.x).min(rect.height() / s.y);
-                let img_rect = egui::Rect::from_center_size(rect.center(), s * scale);
-                let resp = ui.put(img_rect, egui::Image::new((tex.id(), s * scale)).sense(egui::Sense::click()));
-                if resp.clicked() {
-                    if let Some(p) = resp.interact_pointer_pos() {
-                        let u = ((p.x - img_rect.min.x) / img_rect.width()).clamp(0.0, 1.0);
-                        let v = ((p.y - img_rect.min.y) / img_rect.height()).clamp(0.0, 1.0);
-                        self.zoom = Some(ZoomReq { center: [u, v], view_px: [1, 1] });
-                        self.zoom_after = None;
-                        self.zoom_before = None;
+        if self.zoom.is_some() {
+            if resp.dragged() {
+                let s = size(view.level);
+                view.center[0] -= resp.drag_delta().x / s.x;
+                view.center[1] -= resp.drag_delta().y / s.y;
+            } else if clicked {
+                self.zoom = None;
+                return;
+            }
+        } else if clicked {
+            // Click in fit view: 100% at that point.
+            if let Some(p) = click_pos {
+                let s = size(fit_level);
+                let u = 0.5 + (p.x - rect.center().x) / s.x;
+                let v = 0.5 + (p.y - rect.center().y) / s.y;
+                view = View { level: 1.0f32.max(fit_level), center: [u, v] };
+                self.zoom = Some(view);
+            }
+        }
+
+        // Keep the image covering the viewport where it can.
+        let s = size(view.level);
+        for (c, (vw, iw)) in view.center.iter_mut().zip([(rect.width(), s.x), (rect.height(), s.y)]) {
+            let half = vw / 2.0 / iw;
+            *c = if half >= 0.5 { 0.5 } else { c.clamp(half, 1.0 - half) };
+        }
+        if self.zoom.is_some() {
+            self.zoom = Some(view);
+        }
+        let img_rect = egui::Rect::from_min_size(rect.center() - egui::vec2(view.center[0] * s.x, view.center[1] * s.y), s);
+        let at = |r: [f32; 4]| egui::Rect::from_min_max(img_rect.lerp_inside(egui::vec2(r[0], r[1])), img_rect.lerp_inside(egui::vec2(r[2], r[3])));
+        self.visible = {
+            let a = (rect.min - img_rect.min) / s;
+            let b = (rect.max - img_rect.min) / s;
+            [a.x.clamp(0.0, 1.0), a.y.clamp(0.0, 1.0), b.x.clamp(0.0, 1.0), b.y.clamp(0.0, 1.0)]
+        };
+
+        let painter = ui.painter_at(rect);
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        let white = egui::Color32::WHITE;
+        let zoomed = self.zoom.is_some();
+        if self.show_before {
+            let tex = if zoomed { self.full_before_tex.as_ref().or(self.fit_before.as_ref()) } else { self.fit_before.as_ref() };
+            if let Some(t) = tex {
+                painter.image(t.id(), img_rect, uv, white);
+            }
+        } else {
+            // Best available: full-res render (possibly of an older edit), else
+            // the fit preview stretched; then the fresh patch on top.
+            let current = self.current_key().cloned();
+            let full_current = self.full_tex.as_ref().is_some_and(|f| Some(&f.1) == current.as_ref());
+            match (&self.full_tex, zoomed) {
+                (Some((t, _)), true) => {
+                    painter.image(t.id(), img_rect, uv, white);
+                }
+                _ => {
+                    if let Some(t) = &self.fit_after {
+                        painter.image(t.id(), img_rect, uv, white);
                     }
                 }
-                if resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn);
-                }
-                if self.show_before {
-                    badge(ui, rect, "BEFORE (neutral)");
+            }
+            if zoomed && !full_current {
+                if let Some((t, r, k)) = &self.patch {
+                    if Some(k) == current.as_ref() {
+                        painter.image(t.id(), at(*r), uv, white);
+                    }
                 }
             }
-            _ => {
-                ui.centered_and_justified(|ui| ui.spinner());
+        }
+        if zoomed {
+            let label = format!("{:.0}%{}", view.level * 100.0, if self.show_before { " · BEFORE" } else { "" });
+            badge(ui, rect, &label);
+        } else {
+            if self.show_before {
+                badge(ui, rect, "BEFORE (neutral)");
             }
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn);
+            }
+        }
+        if zoomed && resp.hovered() {
+            ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
         }
     }
 }
@@ -1096,6 +1310,24 @@ mod tests {
 
     /// Rotating an image and mapping its corners must agree with
     /// `output::apply_orientation`.
+    #[test]
+    fn sensor_to_display_inverts_display_to_sensor() {
+        for o in [
+            Orientation::Normal,
+            Orientation::HorizontalFlip,
+            Orientation::Rotate180,
+            Orientation::VerticalFlip,
+            Orientation::Transpose,
+            Orientation::Rotate90,
+            Orientation::Transverse,
+            Orientation::Rotate270,
+        ] {
+            let (s, t) = display_to_sensor(o, 0.2, 0.7);
+            let (u, v) = sensor_to_display(o, s, t);
+            assert!((u - 0.2).abs() < 1e-6 && (v - 0.7).abs() < 1e-6, "{o:?}");
+        }
+    }
+
     #[test]
     fn display_to_sensor_matches_apply_orientation() {
         let (w, h) = (4u32, 3u32);

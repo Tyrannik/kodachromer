@@ -9,7 +9,7 @@ use image::RgbImage;
 use serde::{Deserialize, Serialize};
 
 use crate::develop::{self, CameraImage, Quality};
-use crate::film::{FilmModel, FilmParams, FilmPreset};
+use crate::film::{FilmModel, FilmParams, FilmPreset, GrainFrame};
 use crate::{output, raw};
 
 pub const SIDECAR_SUFFIX: &str = ".m9film.json";
@@ -31,6 +31,10 @@ pub struct Edit {
     pub grain: f32,
     /// Grain clump size multiplier (1 = preset default).
     pub grain_size: f32,
+    /// Highlight shoulder, -1 (recover detail) .. +1 (brighter, blows sooner).
+    pub highlights: f32,
+    /// Detail sharpening (like a scanner's), 0 = off.
+    pub sharpen: f32,
 }
 
 impl Default for Edit {
@@ -43,6 +47,8 @@ impl Default for Edit {
             tint: 0.0,
             grain: 1.0,
             grain_size: 1.0,
+            highlights: 0.0,
+            sharpen: 0.3,
         }
     }
 }
@@ -102,7 +108,19 @@ pub fn render_with(
     pixel_scale: f64,
     seed: u64,
 ) -> Result<RgbImage> {
-    let linear = develop::to_working(cam, edit.wb_adjust(), edit.exposure_ev)?;
+    render_framed(cam, edit, preset_override, pixel_scale, seed, GrainFrame { origin: (0, 0), stride: cam.width })
+}
+
+fn render_framed(
+    cam: &CameraImage,
+    edit: &Edit,
+    preset_override: Option<&FilmPreset>,
+    pixel_scale: f64,
+    seed: u64,
+    frame: GrainFrame,
+) -> Result<RgbImage> {
+    let mut linear = develop::to_working(cam, edit.wb_adjust(), edit.exposure_ev)?;
+    develop::sharpen(&mut linear, edit.sharpen, (0.8 / pixel_scale) as f32);
     Ok(match &edit.preset {
         Some(id) => {
             let preset = match preset_override {
@@ -112,14 +130,35 @@ pub fn render_with(
             let params = FilmParams {
                 grain: edit.grain as f64,
                 grain_size: edit.grain_size as f64,
+                highlights: edit.highlights as f64,
                 pixel_scale,
                 seed,
                 ..Default::default()
             };
-            output::display_to_srgb8(&FilmModel::new(&preset, &params)?.apply(&linear, seed))
+            output::display_to_srgb8(&FilmModel::new(&preset, &params)?.apply_framed(&linear, seed, frame))
         }
         None => output::to_srgb8(&linear),
     })
+}
+
+/// Render a rectangle (sensor coordinates, full resolution) of a full-frame
+/// camera image. Grain and sharpening match a full render exactly: the crop is
+/// rendered with an apron and grain is taken from absolute frame positions.
+pub fn render_region(
+    cam: &CameraImage,
+    rect: (usize, usize, usize, usize),
+    edit: &Edit,
+    preset_override: Option<&FilmPreset>,
+    seed: u64,
+) -> Result<RgbImage> {
+    const APRON: usize = 12;
+    let (x, y, w, h) = rect;
+    let (ax, ay) = (x.saturating_sub(APRON), y.saturating_sub(APRON));
+    let (ax2, ay2) = ((x + w + APRON).min(cam.width), (y + h + APRON).min(cam.height));
+    let crop = cam.crop(ax, ay, ax2 - ax, ay2 - ay);
+    let img = render_framed(&crop, edit, preset_override, 1.0, seed, GrainFrame { origin: (ax, ay), stride: cam.width })?;
+    let (w, h) = (w.min(crop.width - (x - ax)), h.min(crop.height - (y - ay)));
+    Ok(image::imageops::crop_imm(&img, (x - ax) as u32, (y - ay) as u32, w as u32, h as u32).to_image())
 }
 
 /// Full pipeline for export: decode, develop, apply the edit, orient.

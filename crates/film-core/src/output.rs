@@ -6,7 +6,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use image::RgbImage;
-use image::codecs::jpeg::JpegEncoder;
 use rawler::decoders::Orientation;
 use rayon::prelude::*;
 
@@ -60,13 +59,19 @@ pub fn write_jpeg(img: &RgbImage, path: &Path, quality: u8) -> Result<()> {
 
 /// Encode a JPEG, optionally carrying camera metadata from the source DNG.
 pub fn write_jpeg_with_exif(img: &RgbImage, path: &Path, quality: u8, exif: Option<&crate::exif::ExifInfo>) -> Result<()> {
+    // Full-resolution colour (4:4:4) and optimised Huffman tables: noticeably
+    // cleaner fine colour detail and grain than the default 4:2:0.
     let mut jpeg = Vec::new();
-    JpegEncoder::new_with_quality(&mut jpeg, quality)
-        .encode_image(img)
-        .with_context(|| format!("encoding {}", path.display()))?;
+    let mut enc = jpeg_encoder::Encoder::new(&mut jpeg, quality);
+    enc.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_4_4);
+    enc.set_optimized_huffman_tables(true);
     if let Some(info) = exif {
-        jpeg = crate::exif::insert_into_jpeg(&jpeg, &crate::exif::build_tiff(info, img.width(), img.height()))?;
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend(crate::exif::build_tiff(info, img.width(), img.height()));
+        enc.add_app_segment(1, app1).context("adding EXIF")?;
     }
+    let (w, h) = (u16::try_from(img.width()).context("image too wide for JPEG")?, u16::try_from(img.height()).context("image too tall for JPEG")?);
+    enc.encode(img.as_raw(), w, h, jpeg_encoder::ColorType::Rgb).with_context(|| format!("encoding {}", path.display()))?;
     let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
     let mut w = BufWriter::new(file);
     std::io::Write::write_all(&mut w, &jpeg).with_context(|| format!("writing {}", path.display()))
