@@ -39,6 +39,13 @@ Key choices (to confirm in Phase 1):
 5. **Tuning with your eye** — side-by-side iterations.
 6. **More stocks.**
 
+## Kodachrome reference sources
+- Wikimedia Commons, [Photographs taken on Kodachrome 64 film](https://commons.wikimedia.org/wiki/Category:Photographs_taken_on_Kodachrome_64_film) — 52 freely licensed, labelled K64 scans (mixed scanners).
+- Library of Congress, John Margolies Roadside America — ~11,700 slide scans, no known restrictions; mostly Kodachrome 25 (same K-14 family).
+- Flickr tag/group "Kodachrome 64" — many; personal reference only unless CC-licensed.
+- Kodak datasheets: E-55 (Kodachrome 25/64/200 Professional, 2009) and E-88 (consumer KR 64), indexed at 125px.com/techdocs/kodak.
+- Best ground truth: buy a lot of K64 slides and copy them with the M9 on a light table (same camera pipeline as our inputs).
+
 ## Your to-dos
 - [ ] 20–30 sample M9 DNGs in `samples/` (varied light, skin, sky, reds, foliage, contrast, compressed + uncompressed, ideally a ColorChecker).
 - [ ] Kodachrome 64 references (your scans ideally) in `references/` + note: projected-slide look or scanned look?
