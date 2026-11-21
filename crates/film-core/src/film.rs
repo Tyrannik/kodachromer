@@ -33,6 +33,8 @@ pub struct FilmPreset {
     pub look: Look,
     pub scan: Scan,
     pub grain: Grain,
+    #[serde(default)]
+    pub halation: Halation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,6 +103,26 @@ pub struct Grain {
     pub correlation: f64,
     pub blur_px: f64,
     pub amount: f64,
+}
+
+/// Halation: light that passes through the emulsion, reflects off the film
+/// base and re-exposes the bottom (red-sensitive) layer, giving a warm glow
+/// around strong highlights. Its strength is set per image.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Halation {
+    /// Spread of the glow (Gaussian sigma) in pixels at full M9 resolution.
+    pub radius_px: f64,
+    /// Highlights brighter than this many stops over mid-grey produce glow.
+    pub threshold_stops: f64,
+    /// How much of the reflected light reaches the red, green and blue layers.
+    pub tint: [f64; 3],
+}
+
+impl Default for Halation {
+    fn default() -> Self {
+        Self { radius_px: 40.0, threshold_stops: 1.75, tint: [1.0, 0.22, 0.04] }
+    }
 }
 
 pub const KODACHROME_64: &str = include_str!("../../../presets/kodachrome64.toml");
@@ -193,11 +215,13 @@ pub struct FilmParams {
     pub pixel_scale: f64,
     /// Highlight shoulder, -1 (hold back / recover) .. +1 (open up).
     pub highlights: f64,
+    /// Halation strength, 0 (off) .. 1 (strong).
+    pub halation: f64,
 }
 
 impl Default for FilmParams {
     fn default() -> Self {
-        Self { exposure_ev: 0.0, grain: 1.0, grain_size: 1.0, seed: 0, pixel_scale: 1.0, highlights: 0.0 }
+        Self { exposure_ev: 0.0, grain: 1.0, grain_size: 1.0, seed: 0, pixel_scale: 1.0, highlights: 0.0, halation: 0.0 }
     }
 }
 
@@ -238,6 +262,11 @@ pub struct FilmModel {
     inv_gamma: f32,
     scan_wb: [f32; 3],
     grain_sigma: f32,
+    /// Halation: gain, blur sigma in output pixels, threshold (input units), tint.
+    hal_gain: f32,
+    hal_sigma: f32,
+    hal_threshold: f32,
+    hal_tint: [f32; 3],
     grain_corr: f32,
     grain_blur: f32,
 }
@@ -319,6 +348,10 @@ impl FilmModel {
             inv_gamma: (1.0 / p.scan.gamma.max(0.1)) as f32,
             scan_wb: p.scan.white_balance.map(|v| v as f32),
             grain_sigma: grain_sigma as f32,
+            hal_gain: (params.halation.clamp(0.0, 2.0) * HALATION_GAIN) as f32,
+            hal_sigma: (p.halation.radius_px.max(0.5) / f) as f32,
+            hal_threshold: (10f64.powf(grey_log_e - log_offset) * 2f64.powf(p.halation.threshold_stops)) as f32,
+            hal_tint: p.halation.tint.map(|v| v as f32),
             grain_corr: p.grain.correlation.clamp(0.0, 1.0) as f32,
             grain_blur: (full_blur / f) as f32,
         })
@@ -326,9 +359,18 @@ impl FilmModel {
 
     /// Integral (scanner-channel) densities for one working-space pixel.
     pub fn densities(&self, rgb: [f32; 3]) -> [f32; 3] {
+        self.densities_from_exposure(self.layer_exposure(rgb))
+    }
+
+    /// Linear exposure of the red-, green- and blue-sensitive layers.
+    fn layer_exposure(&self, rgb: [f32; 3]) -> [f32; 3] {
         let m = &self.to_layers;
+        [0, 1, 2].map(|i| m[i][0] * rgb[0] + m[i][1] * rgb[1] + m[i][2] * rgb[2])
+    }
+
+    fn densities_from_exposure(&self, exposure: [f32; 3]) -> [f32; 3] {
         let log_e = [0, 1, 2].map(|i| {
-            let e = m[i][0] * rgb[0] + m[i][1] * rgb[1] + m[i][2] * rgb[2];
+            let e = exposure[i];
             // Flare pedestal, then a floor well below the film's maximum
             // density (the curve is flat there, so nothing visible changes).
             let le = (e.max(0.0) + self.flare).log10() + self.log_offset;
@@ -361,14 +403,69 @@ impl FilmModel {
 
     /// As [`apply`], for an image that is a crop of a larger frame.
     pub fn apply_framed(&self, img: &LinearImage, seed: u64, frame: GrainFrame) -> LinearImage {
-        let mut dens: Vec<[f32; 3]> = img.pixels.par_iter().map(|&p| self.densities(p)).collect();
+        let mut exposure: Vec<[f32; 3]> = img.pixels.par_iter().map(|&p| self.layer_exposure(p)).collect();
+        if self.hal_gain > 0.0 {
+            self.add_halation(&mut exposure, img.width, img.height);
+        }
+        let mut dens: Vec<[f32; 3]> = exposure.par_iter().map(|&e| self.densities_from_exposure(e)).collect();
+        drop(exposure);
         if self.grain_sigma > 0.0 {
             add_grain(&mut dens, img.width, img.height, self, seed, frame);
         }
         let pixels = dens.par_iter().map(|&d| self.scan(d)).collect();
         LinearImage { width: img.width, height: img.height, pixels, cct: img.cct }
     }
+
+    /// Add halation to layer exposures: light above the threshold is spread
+    /// by a wide Gaussian (computed on a reduced grid, since the glow is
+    /// smooth) and added back, mostly to the red layer.
+    fn add_halation(&self, exposure: &mut [[f32; 3]], w: usize, h: usize) {
+        let t = self.hal_threshold;
+        // Long wavelengths penetrate the emulsion best, so weight towards red.
+        let source = |e: &[f32; 3]| (0.6 * e[0] + 0.3 * e[1] + 0.1 * e[2] - t).max(0.0);
+        let d = ((self.hal_sigma / 3.0).floor() as usize).max(1);
+        let (sw, sh) = (w.div_ceil(d), h.div_ceil(d));
+        let mut small: Vec<f32> = (0..sw * sh)
+            .into_par_iter()
+            .map(|i| {
+                let (sx, sy) = (i % sw, i / sw);
+                let (mut sum, mut n) = (0.0f32, 0u32);
+                for y in sy * d..((sy + 1) * d).min(h) {
+                    for x in sx * d..((sx + 1) * d).min(w) {
+                        sum += source(&exposure[y * w + x]);
+                        n += 1;
+                    }
+                }
+                sum / n.max(1) as f32
+            })
+            .collect();
+        if small.iter().all(|v| *v == 0.0) {
+            return;
+        }
+        blur(&mut small, sw, sh, self.hal_sigma / d as f32);
+        let gain = self.hal_tint.map(|c| c * self.hal_gain);
+        exposure.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            // Bilinear sample of the blurred grid at this pixel's centre.
+            let fy = ((y as f32 + 0.5) / d as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+            let (y0, ty) = (fy.floor() as usize, fy.fract());
+            let y1 = (y0 + 1).min(sh - 1);
+            for (x, e) in row.iter_mut().enumerate() {
+                let fx = ((x as f32 + 0.5) / d as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+                let (x0, tx) = (fx.floor() as usize, fx.fract());
+                let x1 = (x0 + 1).min(sw - 1);
+                let top = small[y0 * sw + x0] * (1.0 - tx) + small[y0 * sw + x1] * tx;
+                let bottom = small[y1 * sw + x0] * (1.0 - tx) + small[y1 * sw + x1] * tx;
+                let glow = top * (1.0 - ty) + bottom * ty;
+                for c in 0..3 {
+                    e[c] += gain[c] * glow;
+                }
+            }
+        });
+    }
 }
+
+/// Halation exposure gain at strength 1.0.
+const HALATION_GAIN: f64 = 0.8;
 
 /// Solve f(x) = target for a monotonically decreasing f on [lo, hi].
 fn find_log_e(f: impl Fn(f64) -> f64, target: f64, mut lo: f64, mut hi: f64) -> f64 {
@@ -595,6 +692,33 @@ mod tests {
             let hi = outs.iter().map(|o| o[c]).fold(f32::MIN, f32::max);
             assert!(hi - lo < 0.02, "channel {c} swings {lo}..{hi}: {outs:?}");
         }
+    }
+
+    #[test]
+    fn halation_glows_red_around_highlights_only() {
+        let p = FilmPreset::builtin("kodachrome64").unwrap();
+        // Larger than the glow's reach (3 sigma = 120 px) from centre to corner.
+        let (w, h) = (400, 300);
+        let grey = p.exposure.grey_linear as f32;
+        // Dark background with one very bright square in the middle.
+        let pixels: Vec<[f32; 3]> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                if (190..210).contains(&x) && (140..160).contains(&y) { [grey * 8.0; 3] } else { [grey * 0.25; 3] }
+            })
+            .collect();
+        let img = LinearImage { width: w, height: h, pixels, cct: 5000.0 };
+        let render = |hal: f64| {
+            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, halation: hal, ..Default::default() }).unwrap();
+            m.apply(&img, 0)
+        };
+        let (off, on) = (render(0.0), render(1.0));
+        let near = 150 * w + 215; // just right of the bright square
+        let far = 5 * w + 5; // far corner
+        let (a, b) = (off.pixels[near], on.pixels[near]);
+        assert!(b[0] - a[0] > 0.01, "red should glow near the highlight: {a:?} -> {b:?}");
+        assert!(b[0] - a[0] > (b[2] - a[2]) * 2.0, "glow should be red-dominant: {a:?} -> {b:?}");
+        assert_eq!(off.pixels[far], on.pixels[far], "no glow far from highlights");
     }
 
     #[test]

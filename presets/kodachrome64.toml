@@ -71,3 +71,15 @@ blur_px = 1.1
 # scanner's MTF and overstates grain at pixel level; 0.3 matches 4000 dpi
 # K64 scans by eye, 0.4 reads a little more clearly in finished images.
 amount = 0.4
+
+[halation]
+# Glow from light reflecting off the film base into the red layer. Kodachrome
+# had an anti-halation backing, so the per-image Halation slider defaults to 0;
+# these set the character when you turn it up.
+# Spread (Gaussian sigma) in pixels at full M9 resolution (~0.28 mm on film).
+radius_px = 40.0
+# Only highlights brighter than this many stops over mid-grey glow. Kept low
+# because the camera clips light sources at only ~3 stops over grey.
+threshold_stops = 1.75
+# Share of the reflected light reaching the red, green, blue layers.
+tint = [1.0, 0.22, 0.04]

@@ -35,6 +35,8 @@ pub struct Edit {
     pub highlights: f32,
     /// Detail sharpening (like a scanner's), 0 = off.
     pub sharpen: f32,
+    /// Halation glow around bright highlights, 0 = off .. 1 = strong.
+    pub halation: f32,
 }
 
 impl Default for Edit {
@@ -49,6 +51,8 @@ impl Default for Edit {
             grain_size: 1.0,
             highlights: 0.0,
             sharpen: 0.3,
+            // Kodachrome had an anti-halation backing, so off by default.
+            halation: 0.0,
         }
     }
 }
@@ -131,6 +135,7 @@ fn render_framed(
                 grain: edit.grain as f64,
                 grain_size: edit.grain_size as f64,
                 highlights: edit.highlights as f64,
+                halation: edit.halation as f64,
                 pixel_scale,
                 seed,
                 ..Default::default()

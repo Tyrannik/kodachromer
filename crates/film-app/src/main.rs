@@ -835,6 +835,7 @@ impl FilmApp {
         slider(ui, true, &mut e.warmth, -1.0..=1.0, 0.01, "Warmth", d.warmth);
         slider(ui, true, &mut e.tint, -1.0..=1.0, 0.01, "Tint", d.tint);
         slider(ui, film, &mut e.highlights, -1.0..=1.0, 0.01, "Highlights", d.highlights);
+        slider(ui, film, &mut e.halation, 0.0..=1.0, 0.01, "Halation", d.halation);
         slider(ui, true, &mut e.sharpen, 0.0..=1.0, 0.01, "Sharpen", d.sharpen);
         slider(ui, film, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain);
         slider(ui, film, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size);
