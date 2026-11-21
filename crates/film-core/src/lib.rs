@@ -8,4 +8,5 @@ pub mod edit;
 pub mod exif;
 pub mod film;
 pub mod output;
+pub mod presets;
 pub mod raw;

@@ -15,14 +15,14 @@
 
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::color::{self, Mat3};
 use crate::develop::LinearImage;
 
 // ---------------------------------------------------------------- preset data
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilmPreset {
     pub id: String,
     pub name: String,
@@ -35,7 +35,7 @@ pub struct FilmPreset {
     pub grain: Grain,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Curves {
     pub log_exposure_r: Vec<f64>,
     pub density_r: Vec<f64>,
@@ -45,24 +45,27 @@ pub struct Curves {
     pub density_b: Vec<f64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dyes {
     pub matrix: Mat3,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Exposure {
     pub grey_linear: f64,
     pub grey_density: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Look {
     pub sensitivity: Mat3,
     pub interimage: f64,
+    /// Scales log exposure around mid-grey: >1 steeper (more contrast).
+    #[serde(default = "one")]
+    pub contrast: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scan {
     pub black_density: f64,
     pub neutral_balance: f64,
@@ -82,7 +85,7 @@ fn unity3() -> [f64; 3] {
     [1.0; 3]
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Grain {
     pub rms_granularity: f64,
     pub correlation: f64,
@@ -114,8 +117,12 @@ impl FilmPreset {
     pub fn builtin(id: &str) -> Result<Self> {
         match id {
             "kodachrome64" => Self::from_toml(KODACHROME_64),
-            _ => bail!("unknown preset '{id}' (available: kodachrome64)"),
+            _ => bail!("unknown built-in preset '{id}' (available: kodachrome64)"),
         }
+    }
+
+    pub fn to_toml(&self) -> Result<String> {
+        Ok(toml::to_string_pretty(self)?)
     }
 }
 
@@ -190,6 +197,8 @@ const GRANULARITY_APERTURE_UM: f64 = 48.0;
 pub struct FilmModel {
     to_layers: [[f32; 3]; 3],
     log_offset: f32,
+    grey_log_e: f32,
+    contrast: f32,
     interimage: f32,
     analytical: [Lut; 3],
     dyes: [[f32; 3]; 3],
@@ -265,6 +274,8 @@ impl FilmModel {
         Ok(Self {
             to_layers: to_layers.map(|r| r.map(|v| v as f32)),
             log_offset: log_offset as f32,
+            grey_log_e: grey_log_e as f32,
+            contrast: p.look.contrast.clamp(0.3, 3.0) as f32,
             interimage: p.look.interimage as f32,
             analytical,
             dyes: p.dyes.matrix.map(|r| r.map(|v| v as f32)),
@@ -284,7 +295,8 @@ impl FilmModel {
         let m = &self.to_layers;
         let log_e = [0, 1, 2].map(|i| {
             let e = m[i][0] * rgb[0] + m[i][1] * rgb[1] + m[i][2] * rgb[2];
-            e.max(1e-7).log10() + self.log_offset
+            let le = e.max(1e-7).log10() + self.log_offset;
+            self.grey_log_e + (le - self.grey_log_e) * self.contrast
         });
         let mean = (log_e[0] + log_e[1] + log_e[2]) / 3.0;
         let a = [0, 1, 2].map(|i| self.analytical[i].eval(log_e[i] + self.interimage * (log_e[i] - mean)));

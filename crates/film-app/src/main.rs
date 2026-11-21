@@ -16,7 +16,8 @@ use std::thread;
 use eframe::egui;
 use film_core::develop::{self, CameraImage, Quality};
 use film_core::edit::{self, Edit, ExportOptions};
-use film_core::{output, raw};
+use film_core::film::FilmPreset;
+use film_core::{output, presets, raw};
 use image::RgbImage;
 use rawler::decoders::Orientation;
 use serde::{Deserialize, Serialize};
@@ -24,8 +25,6 @@ use serde::{Deserialize, Serialize};
 const PREVIEW_EDGE: usize = 1800;
 const THUMB_EDGE: usize = 240;
 
-/// Film presets offered in the UI: (id, label). `None` = neutral render.
-const PRESETS: &[(Option<&str>, &str)] = &[(Some("kodachrome64"), "Kodachrome 64"), (None, "None (neutral)")];
 /// Export size choices: (max long edge, label).
 const SIZES: &[(Option<u32>, &str)] =
     &[(None, "Full size"), (Some(4000), "4000 px"), (Some(3000), "3000 px"), (Some(2048), "2048 px"), (Some(1600), "1600 px")];
@@ -80,12 +79,24 @@ struct PreviewJob {
     path: PathBuf,
     edit: Edit,
     zoom: Option<ZoomReq>,
+    /// Unsaved tuned preset to preview instead of the stored one.
+    preset: Option<FilmPreset>,
+}
+
+/// Live tuning of a film preset's look (applies to every image using it).
+struct Tune {
+    id: String,
+    working: FilmPreset,
+    saved: FilmPreset,
+    /// Kodak-data defaults for double-click reset (built-in presets only).
+    reference: Option<FilmPreset>,
 }
 
 struct PreviewResult {
     path: PathBuf,
     edit: Edit,
     zoom: Option<ZoomReq>,
+    preset: Option<FilmPreset>,
     /// (after, before, full-res oriented size for zoom maths)
     result: Result<(RgbImage, RgbImage, [usize; 2]), String>,
 }
@@ -134,7 +145,7 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
                             fit = Some((job.path.clone(), small, 2.0 * f as f64, raw_image.orientation));
                         }
                         let (_, cam, scale, o) = fit.as_ref().expect("filled above");
-                        let after = output::apply_orientation(edit::render(cam, &job.edit, *scale, seed)?, *o);
+                        let after = output::apply_orientation(edit::render_with(cam, &job.edit, job.preset.as_ref(), *scale, seed)?, *o);
                         let before = output::apply_orientation(edit::render(cam, &neutral, *scale, seed)?, *o);
                         let size = [after.width() as usize, after.height() as usize];
                         Ok((after, before, size))
@@ -153,7 +164,7 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
                         let x = ((s * cam.width as f32) as isize - vw as isize / 2).clamp(0, (cam.width - vw) as isize) as usize;
                         let y = ((t * cam.height as f32) as isize - vh as isize / 2).clamp(0, (cam.height - vh) as isize) as usize;
                         let crop = cam.crop(x, y, vw, vh);
-                        let after = output::apply_orientation(edit::render(&crop, &job.edit, 1.0, seed)?, *o);
+                        let after = output::apply_orientation(edit::render_with(&crop, &job.edit, job.preset.as_ref(), 1.0, seed)?, *o);
                         let before = output::apply_orientation(edit::render(&crop, &neutral, 1.0, seed)?, *o);
                         let size = if swaps_axes(*o) { [cam.height, cam.width] } else { [cam.width, cam.height] };
                         Ok((after, before, size))
@@ -161,7 +172,7 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
                 }
             })()
             .map_err(|e| format!("{e:#}"));
-            if res_tx.send(PreviewResult { path: job.path, edit: job.edit, zoom: job.zoom, result }).is_err() {
+            if res_tx.send(PreviewResult { path: job.path, edit: job.edit, zoom: job.zoom, preset: job.preset, result }).is_err() {
                 break;
             }
             ctx.request_repaint();
@@ -246,7 +257,14 @@ struct FilmApp {
 
     edit: Edit,
     saved_edit: Edit,
-    last_requested: Option<(PathBuf, Edit, Option<ZoomReq>)>,
+    last_requested: Option<(PathBuf, Edit, Option<ZoomReq>, Option<FilmPreset>)>,
+
+    /// (id, name) of available film presets.
+    preset_list: Vec<(String, String)>,
+    tune: Option<Tune>,
+    new_preset_name: String,
+    /// Reference image shown beside the preview: (file name, texture).
+    reference: Option<(String, egui::TextureHandle)>,
 
     preview_tx: Sender<PreviewJob>,
     preview_rx: Receiver<PreviewResult>,
@@ -285,6 +303,10 @@ impl FilmApp {
             edit: Edit::default(),
             saved_edit: Edit::default(),
             last_requested: None,
+            preset_list: presets::list(),
+            tune: None,
+            new_preset_name: String::new(),
+            reference: None,
             preview_tx,
             preview_rx,
             fit_after: None,
@@ -433,19 +455,25 @@ impl FilmApp {
 
     fn request_preview(&mut self) {
         let Some(path) = self.current_path().cloned() else { return };
-        let key = (path.clone(), self.edit.clone(), self.zoom);
+        // Preview unsaved tuning only while it applies to this image's film.
+        let preset = self
+            .tune
+            .as_ref()
+            .filter(|t| Some(&t.id) == self.edit.preset.as_ref() && t.working != t.saved)
+            .map(|t| t.working.clone());
+        let key = (path.clone(), self.edit.clone(), self.zoom, preset.clone());
         if self.last_requested.as_ref() == Some(&key) {
             return;
         }
         self.last_requested = Some(key);
         self.rendering = true;
-        let _ = self.preview_tx.send(PreviewJob { path, edit: self.edit.clone(), zoom: self.zoom });
+        let _ = self.preview_tx.send(PreviewJob { path, edit: self.edit.clone(), zoom: self.zoom, preset });
     }
 
     fn poll_workers(&mut self, ctx: &egui::Context) {
         while let Ok(res) = self.preview_rx.try_recv() {
             let current = self.current_path() == Some(&res.path);
-            let latest = self.last_requested.as_ref().is_some_and(|k| k.1 == res.edit && k.2 == res.zoom);
+            let latest = self.last_requested.as_ref().is_some_and(|k| k.1 == res.edit && k.2 == res.zoom && k.3 == res.preset);
             match res.result {
                 Ok((after, before, size)) if current => {
                     let opts = egui::TextureOptions::LINEAR;
@@ -553,6 +581,13 @@ impl FilmApp {
                     self.open_folder(&ctx, folder);
                 }
             }
+            if ui.button("🖼 Reference…").on_hover_text("Show a reference image (e.g. a real K64 scan) beside the preview").clicked() {
+                let ctx = ui.ctx().clone();
+                self.pick_reference(&ctx);
+            }
+            if self.reference.is_some() && ui.button("✕ Hide reference").clicked() {
+                self.reference = None;
+            }
             ui.separator();
             if self.rendering {
                 ui.spinner();
@@ -625,11 +660,15 @@ impl FilmApp {
         }
         ui.add_space(6.0);
 
-        let current = PRESETS.iter().find(|(id, _)| *id == self.edit.preset.as_deref()).map_or("?", |p| p.1);
+        let current = match &self.edit.preset {
+            None => "None (neutral)".to_string(),
+            Some(id) => self.preset_list.iter().find(|(i, _)| i == id).map_or(format!("{id} (missing)"), |p| p.1.clone()),
+        };
         egui::ComboBox::from_label("Film").selected_text(current).show_ui(ui, |ui| {
-            for (id, label) in PRESETS {
-                ui.selectable_value(&mut self.edit.preset, id.map(str::to_string), *label);
+            for (id, name) in &self.preset_list {
+                ui.selectable_value(&mut self.edit.preset, Some(id.clone()), name);
             }
+            ui.selectable_value(&mut self.edit.preset, None, "None (neutral)");
         });
         ui.add_space(8.0);
 
@@ -669,6 +708,10 @@ impl FilmApp {
 
         ui.add_space(10.0);
         ui.separator();
+        self.tune_section(ui);
+
+        ui.add_space(10.0);
+        ui.separator();
         ui.heading("Settings");
         ui.horizontal(|ui| {
             if ui.button("Copy").on_hover_text("Ctrl+C").clicked() {
@@ -686,6 +729,146 @@ impl FilmApp {
         ui.add_space(10.0);
         ui.separator();
         self.export_section(ui);
+    }
+
+    /// Live tuning of the current film preset. Changes preview immediately and
+    /// apply to every image using that film once saved.
+    fn tune_section(&mut self, ui: &mut egui::Ui) {
+        let Some(id) = self.edit.preset.clone() else { return };
+        if self.tune.as_ref().is_none_or(|t| t.id != id) {
+            match presets::load(&id) {
+                Ok(p) => {
+                    let reference = presets::is_builtin(&id).then(|| FilmPreset::builtin(&id).ok()).flatten();
+                    self.tune = Some(Tune { id: id.clone(), working: p.clone(), saved: p, reference });
+                }
+                Err(e) => {
+                    ui.label(format!("Cannot load film '{id}': {e:#}"));
+                    return;
+                }
+            }
+        }
+        let ctx = ui.ctx().clone();
+        let tune = self.tune.as_mut().expect("loaded above");
+        let dirty = tune.working != tune.saved;
+        let title = if dirty { format!("Tune look: {} •", tune.working.name) } else { format!("Tune look: {}", tune.working.name) };
+        let mut action = None;
+        egui::CollapsingHeader::new(egui::RichText::new(title).heading()).id_salt("tune").show(ui, |ui| {
+            ui.label(egui::RichText::new("Changes the film itself, for every image that uses it. Double-click a slider for the Kodak-data value.").small().weak());
+            let w = &mut tune.working;
+            let r = tune.reference.clone().unwrap_or_else(|| tune.saved.clone());
+            // Base brightness shown as EV relative to the reference grey.
+            let before = -(w.exposure.grey_linear / r.exposure.grey_linear).log2() as f32;
+            let mut bright = before;
+            slider(ui, true, &mut bright, -1.0..=1.0, 0.05, "Brightness (EV)", 0.0);
+            if (bright - before).abs() > 1e-6 {
+                let grey = r.exposure.grey_linear * 2f64.powf(-bright as f64);
+                w.exposure.grey_linear = (grey * 1e5).round() / 1e5;
+            }
+            slider64(ui, &mut w.look.contrast, 0.7..=1.4, "Contrast", r.look.contrast);
+            slider64(ui, &mut w.look.interimage, 0.0..=0.6, "Saturation", r.look.interimage);
+            slider64(ui, &mut w.scan.gamma, 0.8..=1.6, "Shadow lift", r.scan.gamma);
+            slider64(ui, &mut w.scan.black_density, 2.4..=3.8, "Black depth", r.scan.black_density);
+            ui.label(egui::RichText::new("Scanner colour").small());
+            slider64(ui, &mut w.scan.white_balance[0], 0.85..=1.15, "Red", r.scan.white_balance[0]);
+            slider64(ui, &mut w.scan.white_balance[1], 0.85..=1.15, "Green", r.scan.white_balance[1]);
+            slider64(ui, &mut w.scan.white_balance[2], 0.85..=1.15, "Blue", r.scan.white_balance[2]);
+            ui.label(egui::RichText::new("Grain").small());
+            slider64(ui, &mut w.grain.amount, 0.0..=1.2, "Strength", r.grain.amount);
+            let mut colour = 1.0 - w.grain.correlation;
+            slider64(ui, &mut colour, 0.0..=1.0, "Colour grain", 1.0 - r.grain.correlation);
+            w.grain.correlation = 1.0 - colour;
+
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui.add_enabled(dirty, egui::Button::new("Save")).on_hover_text("Update this film for all images").clicked() {
+                    action = Some(TuneAction::Save);
+                }
+                if ui.add_enabled(dirty, egui::Button::new("Discard")).clicked() {
+                    action = Some(TuneAction::Discard);
+                }
+                if tune.reference.is_some() && presets::is_overridden(&tune.id) && ui.button("Restore Kodak defaults").clicked() {
+                    action = Some(TuneAction::Restore);
+                }
+                if !presets::is_builtin(&tune.id) && ui.button("Delete film").clicked() {
+                    action = Some(TuneAction::Delete);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("New film name").desired_width(170.0));
+                if ui.add_enabled(!self.new_preset_name.trim().is_empty(), egui::Button::new("Save as new")).clicked() {
+                    action = Some(TuneAction::SaveAs);
+                }
+            });
+        });
+        if let Some(a) = action {
+            self.apply_tune_action(&ctx, a);
+        }
+    }
+
+    fn apply_tune_action(&mut self, ctx: &egui::Context, action: TuneAction) {
+        let Some(tune) = self.tune.as_mut() else { return };
+        let result: anyhow::Result<String> = (|| match action {
+            TuneAction::Save => {
+                presets::save_user(&tune.working)?;
+                tune.saved = tune.working.clone();
+                Ok(format!("Saved film '{}'.", tune.working.name))
+            }
+            TuneAction::Discard => {
+                tune.working = tune.saved.clone();
+                Ok("Discarded changes.".into())
+            }
+            TuneAction::Restore => {
+                presets::delete_user(&tune.id)?;
+                let p = FilmPreset::builtin(&tune.id)?;
+                tune.working = p.clone();
+                tune.saved = p;
+                Ok("Restored the Kodak-data defaults.".into())
+            }
+            TuneAction::SaveAs => {
+                let name = self.new_preset_name.trim().to_string();
+                let mut p = tune.working.clone();
+                p.id = presets::new_id(&name);
+                p.name = name;
+                presets::save_user(&p)?;
+                // Restore the original film and switch this image to the new one.
+                tune.working = tune.saved.clone();
+                self.edit.preset = Some(p.id.clone());
+                self.new_preset_name.clear();
+                Ok(format!("Created film '{}'.", p.name))
+            }
+            TuneAction::Delete => {
+                presets::delete_user(&tune.id)?;
+                self.edit.preset = presets::BUILTINS.first().map(|(id, _)| id.to_string());
+                Ok("Deleted film.".into())
+            }
+        })();
+        match result {
+            Ok(msg) => self.status = msg,
+            Err(e) => self.status = format!("Could not update film: {e:#}"),
+        }
+        if !matches!(action, TuneAction::Discard) {
+            self.preset_list = presets::list();
+            self.tune = None; // reload on next frame
+            // Saved films change every image that uses them: refresh thumbnails.
+            spawn_thumbnails(ctx.clone(), self.files.clone(), self.thumb_gen.clone(), self.thumb_tx.clone());
+        }
+        self.last_requested = None;
+    }
+
+    fn pick_reference(&mut self, ctx: &egui::Context) {
+        let mut dialog = rfd::FileDialog::new().add_filter("Images", &["jpg", "jpeg", "png"]);
+        if let Some(dir) = self.folder.as_ref().and_then(|f| f.parent()).map(|p| p.join("references")).filter(|p| p.is_dir()) {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.pick_file() else { return };
+        match image::open(&path) {
+            Ok(img) => {
+                let img = img.to_rgb8();
+                let tex = ctx.load_texture("reference", to_color(&img), egui::TextureOptions::LINEAR);
+                self.reference = Some((file_name(&path), tex));
+            }
+            Err(e) => self.status = format!("Could not open reference: {e}"),
+        }
     }
 
     fn export_section(&mut self, ui: &mut egui::Ui) {
@@ -833,6 +1016,17 @@ impl eframe::App for FilmApp {
         egui::Panel::right("edit").resizable(false).exact_size(360.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.edit_panel(ui));
         });
+        if let Some((name, tex)) = &self.reference {
+            let (name, tex) = (name.clone(), tex.clone());
+            let avail = ui.available_width();
+            egui::Panel::right("reference").resizable(true).default_size(avail * 0.4).show(ui, |ui| {
+                ui.label(egui::RichText::new(format!("Reference: {name}")).small().weak());
+                let rect = ui.available_rect_before_wrap();
+                let s = tex.size_vec2();
+                let scale = (rect.width() / s.x).min(rect.height() / s.y);
+                ui.put(egui::Rect::from_center_size(rect.center(), s * scale), egui::Image::new((tex.id(), s * scale)));
+            });
+        }
         egui::CentralPanel::default().show(ui, |ui| self.preview(ui));
 
         // Save once the user lets go of a slider, and keep the preview current.
@@ -845,6 +1039,25 @@ impl eframe::App for FilmApp {
     fn on_exit(&mut self) {
         self.save_if_changed();
         self.settings.save();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TuneAction {
+    Save,
+    Discard,
+    Restore,
+    SaveAs,
+    Delete,
+}
+
+fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str, default: f64) {
+    let mut v = *value as f32;
+    let (lo, hi) = (*range.start() as f32, *range.end() as f32);
+    slider(ui, true, &mut v, lo..=hi, 0.01, text, default as f32);
+    if (v - *value as f32).abs() > 1e-6 {
+        // Round so saved presets read cleanly (0.53, not 0.5299999713897705).
+        *value = (v as f64 * 1000.0).round() / 1000.0;
     }
 }
 

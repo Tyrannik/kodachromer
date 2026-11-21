@@ -90,10 +90,25 @@ pub fn seed_for(path: &Path) -> u64 {
 /// image. `pixel_scale` is the size of one output pixel in full-resolution
 /// sensor pixels (keeps grain consistent between preview and export).
 pub fn render(cam: &CameraImage, edit: &Edit, pixel_scale: f64, seed: u64) -> Result<RgbImage> {
+    render_with(cam, edit, None, pixel_scale, seed)
+}
+
+/// Like [`render`], but `preset_override` (an unsaved, in-app tuned preset)
+/// replaces the stored preset when given.
+pub fn render_with(
+    cam: &CameraImage,
+    edit: &Edit,
+    preset_override: Option<&FilmPreset>,
+    pixel_scale: f64,
+    seed: u64,
+) -> Result<RgbImage> {
     let linear = develop::to_working(cam, edit.wb_adjust(), edit.exposure_ev)?;
     Ok(match &edit.preset {
         Some(id) => {
-            let preset = FilmPreset::builtin(id)?;
+            let preset = match preset_override {
+                Some(p) => p.clone(),
+                None => crate::presets::load(id)?,
+            };
             let params = FilmParams {
                 grain: edit.grain as f64,
                 grain_size: edit.grain_size as f64,

@@ -24,6 +24,10 @@ lifted-but-dense shadows rather than a lightbox's full Dmax.
 - Phase 4 (batch) — done: Ctrl/Shift-click and Ctrl+A multi-select, copy/paste settings
   (Ctrl+C / Ctrl+V), batch export of this / selected / edited / all with progress and cancel,
   export size, quality, EXIF toggle and custom folder; `film-cli export` for scripted batches.
+- Phase 5 (tuning) — tools done, tuning is yours: "Tune look" panel edits the film itself live
+  (brightness, contrast, saturation, shadow lift, black depth, scanner RGB, grain strength/colour);
+  Save updates the film everywhere (stored in %APPDATA%\M9Film\presets, Kodak defaults restorable),
+  "Save as new" creates extra film variants; "Reference…" shows a real K64 scan beside the preview.
 
 ## Requirements
 - Open M9 DNGs (compressed and uncompressed).

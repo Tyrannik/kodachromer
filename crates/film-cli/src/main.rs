@@ -145,7 +145,7 @@ fn render(args: &[String]) -> Result<()> {
                 preset = Some(if p.ends_with(".toml") {
                     FilmPreset::from_toml(&std::fs::read_to_string(p).with_context(|| format!("reading {p}"))?)?
                 } else {
-                    FilmPreset::builtin(p)?
+                    film_core::presets::load(p)?
                 });
             }
             _ => inputs.push(a.clone()),
