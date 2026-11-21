@@ -14,6 +14,10 @@ lifted-but-dense shadows rather than a lightbox's full Dmax.
   Characteristic curves and dye cross-absorptions digitised from Kodak E-55 (K64 page); layer
   sensitivity, interimage, scanner gamma/balance and grain strength are tuned by eye and still open
   for your feedback (Phase 5). `film-cli render ... --preset kodachrome64 [--ev] [--grain]`.
+- Phase 3 (app) — done: `film-app` (egui). Library with thumbnails, live preview, film / exposure /
+  warmth / tint / grain controls, hold-B before/after, ←/→ navigation, edits auto-saved to
+  `<file>.DNG.m9film.json` sidecars, full-res JPG export to `<folder>/exports`.
+  Not yet: EXIF copied into JPGs, zoom to 100%, remembering the last folder.
 
 ## Requirements
 - Open M9 DNGs (compressed and uncompressed).

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/film-core", "crates/film-cli"]
+members = ["crates/film-core", "crates/film-cli", "crates/film-app"]
 
 # Image processing is unusably slow without optimisation, even while developing.
 [profile.dev.package."*"]

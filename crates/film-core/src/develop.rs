@@ -67,7 +67,79 @@ fn color_matrix(raw: &RawImage, illuminant: Illuminant) -> Option<Mat3> {
     (m.len() == 9).then(|| [0, 1, 2].map(|i| [0, 1, 2].map(|j| m[i * 3 + j] as f64)))
 }
 
+/// Demosaiced, white-balanced camera RGB plus what's needed to finish the
+/// colour transform. Cache this: re-running [`to_working`] with different
+/// white-balance tweaks or exposure is cheap, demosaicing is not.
+#[derive(Debug, Clone)]
+pub struct CameraImage {
+    pub width: usize,
+    pub height: usize,
+    /// Camera RGB after black/white levels and `wb`, clipped to [0, 1].
+    pub pixels: Vec<[f32; 3]>,
+    /// White balance multipliers already applied to `pixels`.
+    pub wb: [f32; 3],
+    cm_a: Mat3,
+    cm_d65: Mat3,
+    baseline_ev: f32,
+}
+
 pub fn develop(raw: &RawImage, params: &DevelopParams) -> Result<LinearImage> {
+    let cam = demosaic(raw, params.wb, params.quality)?;
+    to_working(&cam, [1.0; 3], params.exposure_ev)
+}
+
+/// Camera RGB -> working space. `wb_adjust` multiplies the applied white
+/// balance (for warmth/tint sliders); the colour matrix is solved for the
+/// combined white balance so the DNG profile interpolation stays correct.
+pub fn to_working(cam: &CameraImage, wb_adjust: [f32; 3], exposure_ev: f32) -> Result<LinearImage> {
+    let total = [0, 1, 2].map(|i| (cam.wb[i] * wb_adjust[i]) as f64);
+    let (m, cct) = color::camera_to_working(&cam.cm_a, &cam.cm_d65, &total).context("singular colour matrix")?;
+    let m = color::mul(&m, &color::diag(&wb_adjust.map(f64::from)));
+    let gain = 2f64.powf((cam.baseline_ev + exposure_ev) as f64);
+    let m: [[f32; 3]; 3] = m.map(|row| row.map(|v| (v * gain) as f32));
+    let pixels = cam
+        .pixels
+        .par_iter()
+        .map(|c| [0, 1, 2].map(|i| m[i][0] * c[0] + m[i][1] * c[1] + m[i][2] * c[2]))
+        .collect();
+    Ok(LinearImage { width: cam.width, height: cam.height, pixels, cct })
+}
+
+impl CameraImage {
+    /// Box-downscale by an integer factor so the long edge is <= `max_edge`.
+    /// Returns the image and the factor used.
+    pub fn downscale_to(&self, max_edge: usize) -> (CameraImage, usize) {
+        let f = self.width.max(self.height).div_ceil(max_edge.max(1)).max(1);
+        if f == 1 {
+            return (self.clone(), 1);
+        }
+        let (w, h) = (self.width / f, self.height / f);
+        let n = (f * f) as f32;
+        let pixels = (0..w * h)
+            .into_par_iter()
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                let mut acc = [0f32; 3];
+                for dy in 0..f {
+                    let row = (y * f + dy) * self.width;
+                    for dx in 0..f {
+                        let p = self.pixels[row + x * f + dx];
+                        acc = [acc[0] + p[0], acc[1] + p[1], acc[2] + p[2]];
+                    }
+                }
+                acc.map(|v| v / n)
+            })
+            .collect();
+        (CameraImage { width: w, height: h, pixels, ..self.clone_meta() }, f)
+    }
+
+    fn clone_meta(&self) -> CameraImage {
+        CameraImage { width: 0, height: 0, pixels: Vec::new(), wb: self.wb, cm_a: self.cm_a, cm_d65: self.cm_d65, baseline_ev: self.baseline_ev }
+    }
+}
+
+/// Levels, white balance and demosaic. `wb = None` uses the as-shot balance.
+pub fn demosaic(raw: &RawImage, wb: Option<[f32; 3]>, quality: Quality) -> Result<CameraImage> {
     let RawPhotometricInterpretation::Cfa(cfa_config) = &raw.photometric else {
         bail!("only Bayer sensors are supported");
     };
@@ -79,7 +151,7 @@ pub fn develop(raw: &RawImage, params: &DevelopParams) -> Result<LinearImage> {
         bail!("floating-point raw data is not supported");
     };
 
-    let wb = params.wb.unwrap_or_else(|| as_shot_wb(raw));
+    let wb = wb.unwrap_or_else(|| as_shot_wb(raw));
     let black = raw.blacklevel.as_bayer_array();
     let white = raw.whitelevel.as_bayer_array();
 
@@ -99,25 +171,21 @@ pub fn develop(raw: &RawImage, params: &DevelopParams) -> Result<LinearImage> {
     // 2. Demosaic straight into the default crop.
     let crop = raw.crop_area.unwrap_or(Rect::new(Point::new(0, 0), Dim2::new(w, h)));
     let pixels = PixF32::new_with(mosaic, w, h);
-    let rgb = match params.quality {
+    let rgb = match quality {
         Quality::Full => PPGDemosaic::new().demosaic(&pixels, cfa, &cfa_config.colors, crop),
         Quality::Half => Superpixel3Channel::new().demosaic(&pixels, cfa, &cfa_config.colors, crop),
     };
     let dim = rgb.dim();
 
-    // 3. Camera RGB -> working space, plus exposure.
     let cm_d65 = color_matrix(raw, Illuminant::D65).context("DNG has no D65 colour matrix")?;
     let cm_a = color_matrix(raw, Illuminant::A).unwrap_or(cm_d65);
-    let wb64 = wb.map(f64::from);
-    let (m, cct) = color::camera_to_working(&cm_a, &cm_d65, &wb64).context("singular colour matrix")?;
-    let gain = 2f64.powf((baseline_exposure(raw) + params.exposure_ev) as f64);
-    let m: [[f32; 3]; 3] = m.map(|row| row.map(|v| (v * gain) as f32));
-
-    let mut pixels = rgb.into_inner();
-    pixels.par_iter_mut().for_each(|p| {
-        let c = *p;
-        *p = [0, 1, 2].map(|i| m[i][0] * c[0] + m[i][1] * c[1] + m[i][2] * c[2]);
-    });
-
-    Ok(LinearImage { width: dim.w, height: dim.h, pixels, cct })
+    Ok(CameraImage {
+        width: dim.w,
+        height: dim.h,
+        pixels: rgb.into_inner(),
+        wb,
+        cm_a,
+        cm_d65,
+        baseline_ev: baseline_exposure(raw),
+    })
 }

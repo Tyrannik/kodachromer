@@ -4,6 +4,7 @@
 
 pub mod color;
 pub mod develop;
+pub mod edit;
 pub mod film;
 pub mod output;
 pub mod raw;
