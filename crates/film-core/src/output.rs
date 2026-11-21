@@ -55,8 +55,19 @@ pub fn apply_orientation(img: RgbImage, orientation: Orientation) -> RgbImage {
 }
 
 pub fn write_jpeg(img: &RgbImage, path: &Path, quality: u8) -> Result<()> {
-    let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
-    JpegEncoder::new_with_quality(BufWriter::new(file), quality)
+    write_jpeg_with_exif(img, path, quality, None)
+}
+
+/// Encode a JPEG, optionally carrying camera metadata from the source DNG.
+pub fn write_jpeg_with_exif(img: &RgbImage, path: &Path, quality: u8, exif: Option<&crate::exif::ExifInfo>) -> Result<()> {
+    let mut jpeg = Vec::new();
+    JpegEncoder::new_with_quality(&mut jpeg, quality)
         .encode_image(img)
-        .with_context(|| format!("encoding {}", path.display()))
+        .with_context(|| format!("encoding {}", path.display()))?;
+    if let Some(info) = exif {
+        jpeg = crate::exif::insert_into_jpeg(&jpeg, &crate::exif::build_tiff(info, img.width(), img.height()))?;
+    }
+    let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
+    let mut w = BufWriter::new(file);
+    std::io::Write::write_all(&mut w, &jpeg).with_context(|| format!("writing {}", path.display()))
 }

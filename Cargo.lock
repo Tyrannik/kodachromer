@@ -1194,6 +1194,8 @@ dependencies = [
  "image",
  "rawler",
  "rfd",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

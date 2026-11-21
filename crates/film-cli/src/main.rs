@@ -9,16 +9,66 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use film_core::develop::{self, DevelopParams, Quality};
+use film_core::edit::ExportOptions;
 use film_core::film::{FilmModel, FilmParams, FilmPreset};
 use film_core::{output, raw};
 
-const USAGE: &str = "usage:\n  film-cli info <file.dng | folder>...\n  film-cli render <file.dng | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | <preset.toml>] [--grain <amount>]";
+const USAGE: &str = "usage:\n  film-cli info <file.dng | folder>...\n  film-cli render <file.dng | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | <preset.toml>] [--grain <amount>]\n  film-cli export <file.dng | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each DNG's saved app edit; default output is <folder>/exports)";
+
+/// Batch export using the app's sidecar edits.
+fn export(args: &[String]) -> Result<()> {
+    let mut inputs = Vec::new();
+    let mut out_dir: Option<PathBuf> = None;
+    let mut opts = ExportOptions::default();
+    let mut edited_only = false;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--out" => out_dir = Some(PathBuf::from(it.next().context("--out needs a folder")?)),
+            "--max-edge" => opts.max_edge = Some(it.next().context("--max-edge needs a value")?.parse()?),
+            "--quality" => opts.quality = it.next().context("--quality needs a value")?.parse()?,
+            "--no-exif" => opts.keep_exif = false,
+            "--edited-only" => edited_only = true,
+            _ => inputs.push(a.clone()),
+        }
+    }
+    if inputs.is_empty() {
+        bail!(USAGE);
+    }
+    let files = collect_dngs(&inputs)?;
+    let (mut ok, mut failed, mut skipped) = (0, 0, 0);
+    for path in &files {
+        let saved = film_core::edit::load(path);
+        if edited_only && saved.is_none() {
+            skipped += 1;
+            continue;
+        }
+        let dir = out_dir.clone().unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("exports"));
+        let start = Instant::now();
+        match film_core::edit::export_jpeg(path, &saved.unwrap_or_default(), &dir, &opts) {
+            Ok(out) => {
+                ok += 1;
+                println!("{} -> {} ({} ms)", path.display(), out.display(), start.elapsed().as_millis());
+            }
+            Err(e) => {
+                failed += 1;
+                println!("{}: FAILED: {e:#}", path.display());
+            }
+        }
+    }
+    println!("{ok} exported, {failed} failed, {skipped} skipped");
+    if failed > 0 {
+        bail!("{failed} export(s) failed");
+    }
+    Ok(())
+}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.split_first() {
         Some((cmd, rest)) if cmd == "info" && !rest.is_empty() => info(rest),
         Some((cmd, rest)) if cmd == "render" => render(rest),
+        Some((cmd, rest)) if cmd == "export" => export(rest),
         _ => bail!(USAGE),
     }
 }

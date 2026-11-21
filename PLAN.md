@@ -17,7 +17,13 @@ lifted-but-dense shadows rather than a lightbox's full Dmax.
 - Phase 3 (app) — done: `film-app` (egui). Library with thumbnails, live preview, film / exposure /
   warmth / tint / grain controls, hold-B before/after, ←/→ navigation, edits auto-saved to
   `<file>.DNG.m9film.json` sidecars, full-res JPG export to `<folder>/exports`.
-  Not yet: EXIF copied into JPGs, zoom to 100%, remembering the last folder.
+  Added since: EXIF in JPGs (camera, date, shutter, ISO, focal length — the M9 records no
+  aperture/lens in standard EXIF), 100% zoom with panning, last folder remembered
+  (%APPDATA%\M9Film\settings.json), double-click a slider to reset, grain size control and
+  preview grain that matches what downsized exports show.
+- Phase 4 (batch) — done: Ctrl/Shift-click and Ctrl+A multi-select, copy/paste settings
+  (Ctrl+C / Ctrl+V), batch export of this / selected / edited / all with progress and cancel,
+  export size, quality, EXIF toggle and custom folder; `film-cli export` for scripted batches.
 
 ## Requirements
 - Open M9 DNGs (compressed and uncompressed).

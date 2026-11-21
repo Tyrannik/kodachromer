@@ -133,6 +133,19 @@ impl CameraImage {
         (CameraImage { width: w, height: h, pixels, ..self.clone_meta() }, f)
     }
 
+    /// Copy out a rectangle (clamped to the image bounds).
+    pub fn crop(&self, x: usize, y: usize, w: usize, h: usize) -> CameraImage {
+        let x = x.min(self.width.saturating_sub(1));
+        let y = y.min(self.height.saturating_sub(1));
+        let w = w.min(self.width - x).max(1);
+        let h = h.min(self.height - y).max(1);
+        let mut pixels = Vec::with_capacity(w * h);
+        for row in y..y + h {
+            pixels.extend_from_slice(&self.pixels[row * self.width + x..row * self.width + x + w]);
+        }
+        CameraImage { width: w, height: h, pixels, ..self.clone_meta() }
+    }
+
     fn clone_meta(&self) -> CameraImage {
         CameraImage { width: 0, height: 0, pixels: Vec::new(), wb: self.wb, cm_a: self.cm_a, cm_d65: self.cm_d65, baseline_ev: self.baseline_ev }
     }

@@ -68,5 +68,5 @@ correlation = 0.85
 blur_px = 0.8
 # Overall multiplier. Pure aperture scaling of the datasheet figure ignores the
 # scanner's MTF and overstates grain at pixel level; 0.3 matches 4000 dpi
-# K64 scans by eye.
-amount = 0.3
+# K64 scans by eye, 0.4 reads a little more clearly in finished images.
+amount = 0.4

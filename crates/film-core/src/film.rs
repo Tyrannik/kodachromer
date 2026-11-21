@@ -166,6 +166,9 @@ pub struct FilmParams {
     pub exposure_ev: f64,
     /// Multiplier on the preset's grain amount. 0 disables grain.
     pub grain: f64,
+    /// Multiplier on grain clump size (1 = preset). Larger = coarser grain
+    /// that stays visible in downsized images.
+    pub grain_size: f64,
     /// Seed so grain is stable across re-renders of the same image.
     pub seed: u64,
     /// Size of one output pixel relative to a full-resolution M9 pixel
@@ -175,7 +178,7 @@ pub struct FilmParams {
 
 impl Default for FilmParams {
     fn default() -> Self {
-        Self { exposure_ev: 0.0, grain: 1.0, seed: 0, pixel_scale: 1.0 }
+        Self { exposure_ev: 0.0, grain: 1.0, grain_size: 1.0, seed: 0, pixel_scale: 1.0 }
     }
 }
 
@@ -247,10 +250,17 @@ impl FilmModel {
             ((dmin[1] - dmin[ch] * scale) as f32, scale as f32)
         });
 
-        let px_um = M9_PIXEL_UM * params.pixel_scale.max(0.1);
-        let grain_sigma = p.grain.rms_granularity / 1000.0 * (GRANULARITY_APERTURE_UM / px_um)
+        // Grain: per-pixel density std at full resolution, then reduced for
+        // downscaled output by how much box-averaging f x f pixels shrinks
+        // noise whose correlation area is ~4*pi*blur^2 (clumpier grain
+        // survives downscaling better, as it does visually).
+        let full_blur = p.grain.blur_px * params.grain_size.clamp(0.25, 6.0);
+        let sigma_full = p.grain.rms_granularity / 1000.0 * (GRANULARITY_APERTURE_UM / M9_PIXEL_UM)
             * p.grain.amount
             * params.grain;
+        let f = params.pixel_scale.max(0.1);
+        let corr_len = (4.0 * std::f64::consts::PI * full_blur * full_blur).max(1.0).sqrt();
+        let grain_sigma = if f <= 1.0 { sigma_full } else { sigma_full * (corr_len / f).min(1.0) };
 
         Ok(Self {
             to_layers: to_layers.map(|r| r.map(|v| v as f32)),
@@ -265,7 +275,7 @@ impl FilmModel {
             scan_wb: p.scan.white_balance.map(|v| v as f32),
             grain_sigma: grain_sigma as f32,
             grain_corr: p.grain.correlation.clamp(0.0, 1.0) as f32,
-            grain_blur: (p.grain.blur_px / params.pixel_scale.max(0.1)) as f32,
+            grain_blur: (full_blur / f) as f32,
         })
     }
 
