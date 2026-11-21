@@ -56,15 +56,18 @@ Optional **halation**, the red glow around bright lights that film without an an
 
 ## Download
 
-Get `Kodachromer-0.1.0-alpha.1-windows-x64.zip` from the
+Get the latest `Kodachromer-<version>-windows-x64.zip` from the
 [Releases page](https://github.com/Tyrannik/kodachromer/releases), unzip it anywhere, and run
-`kodachromer.exe`. There is no installer.
+`kodachromer.exe`. There is no installer. Release builds are made by GitHub Actions directly
+from the tagged source code.
 
 **Requirements:** 64-bit Windows 10 or 11, a GPU with DirectX 12 or Vulkan support (any recent
 integrated GPU works), and about 2 GB of free RAM for full-resolution zoom and export.
 
-**Windows SmartScreen** may warn that the app is from an unknown publisher, because alpha builds are
-not code-signed. Choose *More info → Run anyway*, or build it yourself from source (below).
+**Windows SmartScreen** may warn that the app is from an unknown publisher, because builds are not
+code-signed yet (free signing through SignPath Foundation is being applied for; see
+[Code signing policy](#code-signing-policy)). Choose *More info → Run anyway*, or build it yourself
+from source (below).
 
 ## Using it
 
@@ -143,6 +146,32 @@ cd kodachromer
 cargo run --release -p kodachromer
 cargo test --release
 ```
+
+## Code signing policy
+
+Windows release binaries (`kodachromer.exe`, `kodachromer-cli.exe`) are built by
+[GitHub Actions](.github/workflows/release.yml) on GitHub-hosted runners, directly from the tagged
+source code in this repository. Kodachromer is applying for free code signing from the
+[SignPath Foundation](https://signpath.org). Until that is in place, releases are unsigned.
+
+<!-- After SignPath Foundation approval, replace the sentence above with:
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+-->
+
+**Team and roles**
+
+- Committers and reviewers: [Tyrannik](https://github.com/Tyrannik) (sole maintainer)
+- Approvers: [Tyrannik](https://github.com/Tyrannik)
+
+Every signed release is approved manually by an approver. All team members use multi-factor
+authentication for GitHub and SignPath.
+
+**Privacy policy**
+
+This program will not transfer any information to other networked systems unless specifically
+requested by the user or the person installing or operating it. Kodachromer makes no network
+connections: no telemetry, no update checks, no accounts. The only exception is the project link in
+the About box, which opens in your web browser if you click it.
 
 ## License and credits
 

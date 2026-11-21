@@ -1,0 +1,110 @@
+# Builds, tests and publishes a Windows release when a version tag (v*) is pushed.
+#
+# Everything runs on GitHub-hosted runners from the tagged source, which is what
+# SignPath Foundation requires for free open-source code signing. Once the
+# project is accepted, enable the "Sign" steps below (see docs/CODE_SIGNING.md).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Version from Cargo.toml
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") {
+            throw "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $v"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Package (unsigned)
+        id: package
+        shell: pwsh
+        run: |
+          $dir = ./scripts/package.ps1 -Version '${{ steps.version.outputs.version }}' -NoZip
+          "dir=$dir" >> $env:GITHUB_OUTPUT
+
+      - name: Upload unsigned package
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kodachromer-${{ steps.version.outputs.version }}-windows-x64-unsigned
+          path: ${{ steps.package.outputs.dir }}
+
+      # --- Code signing (enable after SignPath Foundation approval) -----------
+      # - name: Sign with SignPath
+      #   uses: signpath/github-action-submit-signing-request@v3
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      #     project-slug: kodachromer
+      #     signing-policy-slug: release-signing
+      #     github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: ${{ steps.package.outputs.dir }}
+      # -----------------------------------------------------------------------
+
+      - name: Zip
+        id: zip
+        shell: pwsh
+        run: |
+          $dir = '${{ steps.package.outputs.dir }}'
+          $zip = "$dir.zip"
+          Compress-Archive -Path $dir -DestinationPath $zip
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "sha256=$((Get-FileHash $zip -Algorithm SHA256).Hash)" >> $env:GITHUB_OUTPUT
+
+      - name: Release notes from CHANGELOG
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern "^## $([regex]::Escape($v))\b").LineNumber
+          if (-not $start) { throw "No '## $v' section in CHANGELOG.md" }
+          $rest = $lines[$start..($lines.Count - 1)]
+          $end = ($rest | Select-String -Pattern '^## ' | Select-Object -First 1).LineNumber
+          $body = if ($end) { $rest[0..($end - 2)] } else { $rest }
+          @(
+            "Kodachromer $v, an **alpha** build of the film emulator for Leica M9 DNGs."
+            ""
+            "**Download** ``$(Split-Path '${{ steps.zip.outputs.zip }}' -Leaf)`` below, unzip and run ``kodachromer.exe``. Windows 10/11 x64."
+            ""
+            "> Not yet code-signed: Windows SmartScreen may warn about an unknown publisher (*More info → Run anyway*)."
+            ""
+            $body
+            ""
+            "Built by GitHub Actions from tag ``$env:GITHUB_REF_NAME``. SHA-256: ``${{ steps.zip.outputs.sha256 }}``"
+          ) | Set-Content -Encoding utf8 release-notes.md
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $ghArgs = @($env:GITHUB_REF_NAME, '${{ steps.zip.outputs.zip }}', '--title', "Kodachromer $v", '--notes-file', 'release-notes.md')
+          if ($v -match '-') { $ghArgs += '--prerelease' }
+          gh release create @ghArgs

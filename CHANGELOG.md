@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.2
 
 - **Projected slide output** alongside the scanned look: full density range, flare-limited deep
   blacks, warm lamp and corner falloff (tunable under *Tune look*).
@@ -12,6 +12,7 @@
   settings across sessions), and every action shows a short confirmation message.
 - **Fixed:** a crash when Windows or another tool reported an invalid window size during a resize.
 - `KODACHROMER_DATA_DIR` environment variable to keep app data elsewhere (portable use).
+- Releases are now built and published by GitHub Actions from the tagged source.
 
 ## 0.1.0-alpha.1 — first public alpha
 
