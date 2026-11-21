@@ -1,0 +1,45 @@
+# M9 Film Preset App — Plan
+
+Native Windows desktop app in Rust that develops Leica M9 DNGs with film emulation.
+First stock: **Kodachrome 64**. More stocks later as data-only presets. iOS deferred.
+
+## Requirements
+- Open M9 DNGs (compressed and uncompressed).
+- Film look with adjustable exposure, white balance, look strength, grain, vignette.
+- **Non-destructive, re-editable** edits: settings saved to a sidecar next to each DNG.
+- **Batch**: apply/copy settings across many images, export in the background.
+- **Export JPG** (sRGB, embedded ICC profile, EXIF kept, quality + long-edge size options).
+
+## Architecture (Cargo workspace)
+| Crate | Role |
+|---|---|
+| `film-core` | DNG decode, colour pipeline, film model, grain. No UI. Reusable later for iOS. |
+| `film-presets` | Preset files (TOML/JSON: curves, matrices, grain params, version). |
+| `film-app` | GUI (egui/eframe): library grid, editor, before/after, batch queue. |
+| `film-cli` | Command-line batch export (useful for testing and scripting). |
+
+Key choices (to confirm in Phase 1):
+- Raw decode: `rawler` (pure Rust, from dnglab) — fallback: LibRaw bindings.
+- Processing: CPU + `rayon` for full-res export (accuracy first); GPU (`wgpu`) for live preview later if needed.
+- Sidecar: `L1000123.DNG.m9film.json` storing preset id + version and all slider values.
+
+## Image pipeline
+1. Decode DNG → linearise (M9 compressed table), black/white levels.
+2. White balance (AsShotNeutral or user), demosaic (fast for preview, high quality for export).
+3. Camera RGB → XYZ via DNG ColorMatrix/ForwardMatrix → linear wide-gamut working space.
+4. Film model: per-layer exposure → characteristic (H&D) curves → inter-layer colour coupling → dye densities → display render. Baked into a 3D LUT per preset.
+5. Grain (density-dependent), vignette, output transform → sRGB JPG.
+
+## Phases
+0. **Foundations** — workspace, sample DNGs, Kodachrome references, Kodak datasheet data.
+1. **Raw pipeline** — neutral, accurate render; validate against Lightroom/RawTherapee.
+2. **Kodachrome 64 engine** — film model + LUT + grain; tune against references.
+3. **App** — library, editor, sidecars, JPG export.
+4. **Batch** — copy/paste settings, export queue with progress.
+5. **Tuning with your eye** — side-by-side iterations.
+6. **More stocks.**
+
+## Your to-dos
+- [ ] 20–30 sample M9 DNGs in `samples/` (varied light, skin, sky, reds, foliage, contrast, compressed + uncompressed, ideally a ColorChecker).
+- [ ] Kodachrome 64 references (your scans ideally) in `references/` + note: projected-slide look or scanned look?
+- [ ] Optional: install VS Code + rust-analyzer extension if you want to read/edit code yourself.
