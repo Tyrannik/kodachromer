@@ -2,15 +2,17 @@
 //!
 //!   film-cli info   <files or folders...>
 //!   film-cli render <files or folders...> --out <folder> [--half] [--ev <stops>]
+//!                   [--preset kodachrome64 | <preset.toml>] [--grain <amount>]
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use film_core::develop::{self, DevelopParams, Quality};
+use film_core::film::{FilmModel, FilmParams, FilmPreset};
 use film_core::{output, raw};
 
-const USAGE: &str = "usage:\n  film-cli info <file.dng | folder>...\n  film-cli render <file.dng | folder>... --out <folder> [--half] [--ev <stops>]";
+const USAGE: &str = "usage:\n  film-cli info <file.dng | folder>...\n  film-cli render <file.dng | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | <preset.toml>] [--grain <amount>]";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -67,18 +69,43 @@ fn info(paths: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Stable grain seed from the file name, so re-renders match.
+fn seed_for(path: &Path) -> u64 {
+    path.file_name()
+        .map(|n| n.to_string_lossy().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3)))
+        .unwrap_or(0)
+}
+
 fn render(args: &[String]) -> Result<()> {
     let mut inputs = Vec::new();
     let mut out_dir = None;
     let mut params = DevelopParams::default();
+    let mut preset: Option<FilmPreset> = None;
+    let mut film_params = FilmParams::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--out" => out_dir = Some(PathBuf::from(it.next().context("--out needs a folder")?)),
             "--half" => params.quality = Quality::Half,
-            "--ev" => params.exposure_ev = it.next().context("--ev needs a value")?.parse()?,
+            // With a preset, exposure is applied as film exposure (log domain).
+            "--ev" => film_params.exposure_ev = it.next().context("--ev needs a value")?.parse()?,
+            "--grain" => film_params.grain = it.next().context("--grain needs a value")?.parse()?,
+            "--preset" => {
+                let p = it.next().context("--preset needs a name or .toml path")?;
+                preset = Some(if p.ends_with(".toml") {
+                    FilmPreset::from_toml(&std::fs::read_to_string(p).with_context(|| format!("reading {p}"))?)?
+                } else {
+                    FilmPreset::builtin(p)?
+                });
+            }
             _ => inputs.push(a.clone()),
         }
+    }
+    if preset.is_none() {
+        params.exposure_ev = film_params.exposure_ev as f32;
+    }
+    if params.quality == Quality::Half {
+        film_params.pixel_scale = 2.0;
     }
     let out_dir = out_dir.context(USAGE)?;
     if inputs.is_empty() {
@@ -91,7 +118,15 @@ fn render(args: &[String]) -> Result<()> {
         let start = Instant::now();
         let raw_image = raw::load(path)?;
         let linear = develop::develop(&raw_image, &params)?;
-        let img = output::apply_orientation(output::to_srgb8(&linear), raw_image.orientation);
+        let encoded = match &preset {
+            Some(p) => {
+                let model = FilmModel::new(p, &film_params)?;
+                let seed = seed_for(path);
+                output::display_to_srgb8(&model.apply(&linear, seed))
+            }
+            None => output::to_srgb8(&linear),
+        };
+        let img = output::apply_orientation(encoded, raw_image.orientation);
         let out = out_dir.join(path.with_extension("jpg").file_name().unwrap());
         output::write_jpeg(&img, &out, 92)?;
         println!(

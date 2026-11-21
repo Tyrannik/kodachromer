@@ -10,6 +10,10 @@ lifted-but-dense shadows rather than a lightbox's full Dmax.
 - Phase 1 (neutral raw render) — done: `film-cli render` develops M9 DNGs colorimetrically
   (DNG dual-illuminant matrices, Bradford to D50, linear ProPhoto working space, PPG demosaic, sRGB JPEG).
   Known gaps: no highlight reconstruction (channels clip at white), simple per-channel gamut clip on output.
+- Phase 2 (Kodachrome 64 engine) — first version done: `presets/kodachrome64.toml` + `film-core/src/film.rs`.
+  Characteristic curves and dye cross-absorptions digitised from Kodak E-55 (K64 page); layer
+  sensitivity, interimage, scanner gamma/balance and grain strength are tuned by eye and still open
+  for your feedback (Phase 5). `film-cli render ... --preset kodachrome64 [--ev] [--grain]`.
 
 ## Requirements
 - Open M9 DNGs (compressed and uncompressed).

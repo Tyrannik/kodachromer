@@ -1,0 +1,72 @@
+# Kodachrome 64 — scanned-slide emulation.
+#
+# Measured data digitised from the vector plots in Kodak publication E-55
+# (KODACHROME 25, 64 and 200 Professional Film, 06/2009), Kodachrome 64 page:
+#   - characteristic curves: Status A density, K-14 process, daylight, 1/50 s
+#   - spectral dye-density curves (normalised to a visual neutral of 1.0)
+#   - diffuse rms granularity: 10
+# Everything under [look] and [scan] is a tunable aesthetic parameter.
+
+id = "kodachrome64"
+name = "Kodachrome 64"
+version = 1
+
+[curves]
+# Status A integral density vs log10 exposure (lux-seconds), per channel.
+log_exposure_r = [-2.400, -2.326, -2.262, -2.207, -2.090, -1.976, -1.871, -1.775, -1.692, -1.625, -1.575, -1.482, -1.395, -1.311, -1.227, -1.141, -1.050, -1.000, -0.950, -0.876, -0.799, -0.718, -0.634, -0.546, -0.456, -0.407, -0.352, -0.287, -0.217, -0.155, -0.082, -0.035, 0.014, 0.063, 0.112, 0.161, 0.209, 0.265, 0.328, 0.400]
+density_r      = [ 3.680,  3.670,  3.657,  3.640,  3.583,  3.498,  3.395,  3.281,  3.163,  3.051,  2.957,  2.760,  2.559,  2.357,  2.155,  1.953,  1.754,  1.650,  1.549,  1.408,  1.267,  1.126,  0.988,  0.853,  0.721,  0.658,  0.594,  0.527,  0.466,  0.419,  0.371,  0.339, 0.306, 0.276, 0.248, 0.225, 0.208, 0.194, 0.185, 0.180]
+log_exposure_g = [-2.400, -2.324, -2.258, -2.201, -2.071, -1.956, -1.857, -1.769, -1.693, -1.625, -1.575, -1.488, -1.403, -1.319, -1.234, -1.145, -1.050, -1.000, -0.975, -0.835, -0.672, -0.485, -0.268, -0.019, 0.267, 0.330, 0.400]
+density_g      = [ 3.450,  3.438,  3.425,  3.409,  3.352,  3.265,  3.158,  3.038,  2.912,  2.789,  2.689,  2.499,  2.307,  2.116,  1.926,  1.736,  1.549,  1.453,  1.406,  1.149,  0.894,  0.655,  0.451,  0.296, 0.208, 0.198, 0.190]
+log_exposure_b = [-2.400, -2.330, -2.267, -2.213, -2.078, -1.963, -1.865, -1.778, -1.700, -1.625, -1.575, -1.490, -1.406, -1.320, -1.233, -1.143, -1.050, -1.000, -0.975, -0.828, -0.658, -0.463, -0.244, -0.001, 0.267, 0.330, 0.400]
+density_b      = [ 3.330,  3.301,  3.273,  3.245,  3.164,  3.072,  2.969,  2.855,  2.730,  2.593,  2.493,  2.311,  2.130,  1.949,  1.769,  1.591,  1.413,  1.323,  1.280,  1.050,  0.819,  0.605,  0.421,  0.285, 0.212, 0.205, 0.200]
+
+[dyes]
+# Integral (scanner R, G, B) density per unit of each dye's own-band density,
+# averaged from the E-55 spectral dye-density curves over 630–670 nm (R),
+# 530–560 nm (G) and 430–470 nm (B). Rows: R, G, B. Columns: cyan, magenta, yellow.
+# Note the magenta dye's large blue absorption (0.247).
+matrix = [
+  [1.000, 0.076, 0.007],
+  [0.038, 1.000, 0.036],
+  [0.045, 0.247, 1.000],
+]
+
+[exposure]
+# Scene-linear camera value treated as an 18% grey card, and the green
+# density it should produce on the slide.
+grey_linear = 0.12
+grey_density = 1.0
+
+[look]
+# Layer exposure from linear Rec.2020 (rows: red-, green-, blue-sensitive
+# layers). Off-diagonals model overlapping spectral sensitivities.
+sensitivity = [
+  [0.94, 0.06, 0.00],
+  [0.02, 0.88, 0.10],
+  [0.00, 0.06, 0.94],
+]
+# Interimage effect: each layer's log exposure is pushed away from the mean of
+# the three, increasing saturation as K-14 development does.
+interimage = 0.20
+
+[scan]
+# Density the scanner maps to black. Lower = more open shadows.
+black_density = 3.0
+# 0 = raw Status A balance, 1 = scanner grey-balanced at grey_density.
+neutral_balance = 1.0
+# Scanner software gamma (>1 opens shadows the way scan software does).
+gamma = 1.15
+# Scanner colour balance (R, G, B): a little warmth typical of K64 scans.
+white_balance = [1.02, 1.0, 0.95]
+
+[grain]
+# Diffuse rms granularity (x1000, 48 µm aperture) from the datasheet.
+rms_granularity = 10.0
+# 0..1 share of grain common to all three layers (luminance-like).
+correlation = 0.85
+# Scanner/print blur applied to the grain, in pixels at full resolution.
+blur_px = 0.8
+# Overall multiplier. Pure aperture scaling of the datasheet figure ignores the
+# scanner's MTF and overstates grain at pixel level; 0.3 matches 4000 dpi
+# K64 scans by eye.
+amount = 0.3

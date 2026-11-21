@@ -27,6 +27,18 @@ pub fn to_srgb8(img: &LinearImage) -> RgbImage {
     RgbImage::from_raw(img.width as u32, img.height as u32, buf).expect("buffer size matches")
 }
 
+/// Encode an image whose pixels are already display-linear sRGB (e.g. the
+/// film model's scanner output) to 8-bit.
+pub fn display_to_srgb8(img: &LinearImage) -> RgbImage {
+    let mut buf = vec![0u8; img.width * img.height * 3];
+    buf.par_chunks_exact_mut(3).zip(img.pixels.par_iter()).for_each(|(out, p)| {
+        for i in 0..3 {
+            out[i] = (color::srgb_encode(p[i].clamp(0.0, 1.0)) * 255.0 + 0.5) as u8;
+        }
+    });
+    RgbImage::from_raw(img.width as u32, img.height as u32, buf).expect("buffer size matches")
+}
+
 /// Rotate/flip so the image displays upright.
 pub fn apply_orientation(img: RgbImage, orientation: Orientation) -> RgbImage {
     use image::imageops::{flip_horizontal, flip_vertical, rotate90, rotate180, rotate270};
