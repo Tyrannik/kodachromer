@@ -1,6 +1,6 @@
 # Third-party software
 
-Kodachromer is distributed under the GNU GPL v3 or later (see LICENSE). The Windows binaries
+Remjet is distributed under the GNU GPL v3 or later (see LICENSE). The Windows binaries
 statically include the open-source Rust crates listed below, each under its own license as
 declared by its authors. All are compatible with distribution under the GPL v3.
 
@@ -8,7 +8,7 @@ Notable components:
 
 - **rawler** (LGPL-2.1) - raw/DNG decoding, from the dnglab project: https://github.com/dnglab/dnglab.
   Under LGPL-2.1 section 3 it may be distributed under the GPL; its complete source is available
-  from crates.io and the project above, and Kodachromer's full source is in this repository.
+  from crates.io and the project above, and Remjet's full source is in this repository.
 - **egui / eframe** (MIT OR Apache-2.0) - user interface. Bundled fonts: Ubuntu Font Licence 1.0
   and SIL Open Font License 1.1 (epaint_default_fonts).
 - **image**, **jpeg-encoder**, **rayon**, **serde**, **toml**, **rfd**, **wgpu** - MIT and/or Apache-2.0.

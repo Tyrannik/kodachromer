@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/kodachromer-core", "crates/kodachromer-cli", "crates/kodachromer"]
+members = ["crates/remjet-core", "crates/remjet-cli", "crates/remjet"]
 
 [workspace.package]
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 edition = "2024"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/Tyrannik/kodachromer"
+repository = "https://github.com/Tyrannik/remjet"
 description = "Film emulation for Leica M9 DNGs, starting with Kodachrome 64"
 
 # Image processing is unusably slow without optimisation, even while developing.

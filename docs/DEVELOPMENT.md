@@ -1,14 +1,14 @@
 # Development notes
 
-How Kodachromer is put together, for anyone reading or extending the code.
+How Remjet is put together, for anyone reading or extending the code.
 
 ## Workspace
 
 | Crate | Role |
 |---|---|
-| `crates/kodachromer-core` | Everything that touches pixels: DNG decoding, colour science, the film model, grain, halation, edits/sidecars, export, EXIF. No UI. |
-| `crates/kodachromer` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
-| `crates/kodachromer-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
+| `crates/remjet-core` | Everything that touches pixels: DNG decoding, colour science, the film model, grain, halation, edits/sidecars, export, EXIF. No UI. |
+| `crates/remjet` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
+| `crates/remjet-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
 | `presets/` | Film presets as TOML data. `kodachrome64.toml` is compiled in as the built-in film. |
 | `assets/` | Icon. |
 
@@ -41,10 +41,10 @@ How Kodachromer is put together, for anyone reading or extending the code.
 - A preview worker thread renders three kinds of output: a downscaled *fit* preview (fast enough for
   live sliders), a quick *patch* of the visible area at 100%, and the *full* frame, which becomes a
   mipmapped GPU texture so panning and zooming (Ctrl+scroll up to 800%) never re-render.
-- Edits auto-save to an edit store, `%APPDATA%\Kodachromer\edits\<fingerprint>.json`, keyed by a
+- Edits auto-save to an edit store, `%APPDATA%\Remjet\edits\<fingerprint>.json`, keyed by a
   content fingerprint (FNV-1a of file size + first 64 KiB) so they follow moved/renamed files.
   Sidecars written beside DNGs by earlier versions are imported and removed. An edit equal to the
-  defaults is deleted (the image is unedited). `KODACHROMER_DATA_DIR` overrides the data folder.
+  defaults is deleted (the image is unedited). `REMJET_DATA_DIR` overrides the data folder.
 - Undo/redo: each commit (slider release, reset, paste, film change) pushes the previous edit onto
   a per-image, per-session history. Toasts confirm copy, paste, undo and redo.
 - Output modes: *Scan* (scanner black point, gamma, balance) and *Projection* (transmittance shown

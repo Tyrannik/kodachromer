@@ -1,5 +1,5 @@
 [package]
-name = "kodachromer-core"
+name = "remjet-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

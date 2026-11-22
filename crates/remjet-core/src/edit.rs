@@ -13,8 +13,8 @@ pub use crate::film::OutputMode;
 use crate::film::{FilmModel, FilmParams, FilmPreset, GrainFrame};
 use crate::{output, raw};
 
-/// Sidecar names used beside DNGs by 0.1.0-alpha.1 and pre-release builds;
-/// found files are imported into the edit store and removed.
+/// Sidecar names used beside DNGs by 0.1.0-alpha.1 (as Kodachromer) and
+/// pre-release builds; found files are imported into the edit store and removed.
 const SIDECAR_SUFFIX: &str = ".kodachromer.json";
 const LEGACY_SIDECAR_SUFFIX: &str = ".m9film.json";
 const EDIT_VERSION: u32 = 1;
@@ -76,7 +76,7 @@ impl Edit {
 
 // ------------------------------------------------------------- edit store
 //
-// Edits live in the app's data folder (`%APPDATA%\Kodachromer\edits`), not
+// Edits live in the app's data folder (`%APPDATA%\Remjet\edits`), not
 // beside the photos. Each DNG is identified by a fingerprint of its contents
 // (file size + first 64 KiB, which hold the header and capture metadata), so
 // edits follow a file when its folder is moved or renamed. Sidecar files
@@ -348,7 +348,7 @@ mod tests {
 
     /// A temp folder with a fake "DNG" of given content, and a store folder.
     fn setup(tag: &str, content: &[u8]) -> (PathBuf, PathBuf, PathBuf) {
-        let root = std::env::temp_dir().join(format!("kodachromer-{tag}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("remjet-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let photos = root.join("photos");
         std::fs::create_dir_all(&photos).unwrap();

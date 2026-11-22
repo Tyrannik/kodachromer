@@ -1,27 +1,30 @@
 <p align="center">
-  <img src="assets/icon-256.png" width="96" alt="Kodachromer icon">
+  <img src="assets/icon-256.png" width="96" alt="Remjet icon">
 </p>
 
-<h1 align="center">Kodachromer</h1>
+<h1 align="center">Remjet</h1>
 
 <p align="center">
   Film emulation for <b>Leica M9</b> DNGs, starting with <b>Kodachrome 64</b>, as it looks on a scanned slide.<br>
   <i>Alpha · Windows · free and open source (GPL-3.0)</i>
 </p>
 
-![Kodachromer screenshot](docs/images/screenshot.png)
+![Remjet screenshot](docs/images/screenshot.png)
 
-Kodachromer develops your M9 raw files through a model of Kodachrome 64 built from Kodak's own
+Remjet develops your M9 raw files through a model of Kodachrome 64 built from Kodak's own
 published measurements: the film's density curves and the way its dyes absorb light. It then
 "scans" the virtual slide. The result keeps Kodachrome's character: deep, saturated blues, warm
 punchy reds and yellows, dense brown-black shadows and fine grain.
 
 > **Alpha software.** It works well on the files it was developed with, but expect rough edges.
-> Your DNGs are never modified. Please [report issues](https://github.com/Tyrannik/kodachromer/issues).
+> Your DNGs are never modified. Please [report issues](https://github.com/Tyrannik/remjet/issues).
+
+*Remjet was called Kodachromer up to 0.1.0-alpha.2. The name comes from the carbon-black
+backing layer on Kodachrome and cine film. Upgrading keeps your edits and settings.*
 
 ## Before and after
 
-Neutral camera render (left) vs. Kodachrome 64 (right), straight out of Kodachromer with default settings:
+Neutral camera render (left) vs. Kodachrome 64 (right), straight out of Remjet with default settings:
 
 ![Pagoda at night](docs/images/compare-L1003988.jpg)
 ![Roadside shrine](docs/images/compare-L1004071.jpg)
@@ -42,7 +45,7 @@ Optional **halation**, the red glow around bright lights that film without an an
   colour and grain, previewed live. Save it, restore Kodak defaults, or save variants as new films.
 - **Fast, smooth viewing:** live preview while dragging sliders; click for 100%, Ctrl+scroll up to
   800%, and drag to pan without lag.
-- **Non-destructive, clean folders:** edits are kept in Kodachromer's own data folder (nothing is
+- **Non-destructive, clean folders:** edits are kept in Remjet's own data folder (nothing is
   written next to your photos) and follow a file even if you move or rename its folder.
   Full **undo/redo** (Ctrl+Z / Ctrl+Y).
 - **Scanned or projected:** view the slide as a film scanner reads it (open shadows) or as it looks
@@ -56,9 +59,9 @@ Optional **halation**, the red glow around bright lights that film without an an
 
 ## Download
 
-Get the latest `Kodachromer-<version>-windows-x64.zip` from the
-[Releases page](https://github.com/Tyrannik/kodachromer/releases), unzip it anywhere, and run
-`kodachromer.exe`. There is no installer. Release builds are made by GitHub Actions directly
+Get the latest `Remjet-<version>-windows-x64.zip` from the
+[Releases page](https://github.com/Tyrannik/remjet/releases), unzip it anywhere, and run
+`remjet.exe`. There is no installer. Release builds are made by GitHub Actions directly
 from the tagged source code.
 
 **Requirements:** 64-bit Windows 10 or 11, a GPU with DirectX 12 or Vulkan support (any recent
@@ -90,12 +93,12 @@ from source (below).
 
 ### Where things are saved
 
-- **Edits:** `%APPDATA%\Kodachromer\edits`, one small file per image, matched to the DNG by its
+- **Edits:** `%APPDATA%\Remjet\edits`, one small file per image, matched to the DNG by its
   contents, so they survive moving or renaming folders. (Exact copies of the same DNG share an
   edit.) *Reset all* returns an image to unedited. Edit files left beside DNGs by 0.1.0-alpha.1 are
   moved into the store automatically when you open the folder.
-- **App settings and tuned films:** `%APPDATA%\Kodachromer`. To keep everything elsewhere (for example
-  on a USB stick), set the environment variable `KODACHROMER_DATA_DIR` to a folder.
+- **App settings and tuned films:** `%APPDATA%\Remjet`. To keep everything elsewhere (for example
+  on a USB stick), set the environment variable `REMJET_DATA_DIR` to a folder.
 - **Exports:** `<your folder>\exports` unless you choose another folder.
 
 ## How the Kodachrome 64 emulation works
@@ -127,13 +130,13 @@ There are more details in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Command line
 
-`kodachromer-cli.exe` ships with the app:
+`remjet-cli.exe` ships with the app:
 
 ```powershell
 # Export a folder using each DNG's saved edits (resized to 2048 px, edited images only)
-kodachromer-cli export "D:\Photos\Japan" --max-edge 2048 --edited-only
+remjet-cli export "D:\Photos\Japan" --max-edge 2048 --edited-only
 # Show what the decoder sees in each file
-kodachromer-cli info "D:\Photos\Japan"
+remjet-cli info "D:\Photos\Japan"
 ```
 
 ## Building from source
@@ -141,17 +144,17 @@ kodachromer-cli info "D:\Photos\Japan"
 Install [Rust](https://rustup.rs) (stable, MSVC toolchain) and the Visual Studio C++ Build Tools, then:
 
 ```powershell
-git clone https://github.com/Tyrannik/kodachromer
-cd kodachromer
-cargo run --release -p kodachromer
+git clone https://github.com/Tyrannik/remjet
+cd remjet
+cargo run --release -p remjet
 cargo test --release
 ```
 
 ## Code signing policy
 
-Windows release binaries (`kodachromer.exe`, `kodachromer-cli.exe`) are built by
+Windows release binaries (`remjet.exe`, `remjet-cli.exe`) are built by
 [GitHub Actions](.github/workflows/release.yml) on GitHub-hosted runners, directly from the tagged
-source code in this repository. Kodachromer is applying for free code signing from the
+source code in this repository. Remjet is applying for free code signing from the
 [SignPath Foundation](https://signpath.org). Until that is in place, releases are unsigned.
 
 <!-- After SignPath Foundation approval, replace the sentence above with:
@@ -169,19 +172,19 @@ authentication for GitHub and SignPath.
 **Privacy policy**
 
 This program will not transfer any information to other networked systems unless specifically
-requested by the user or the person installing or operating it. Kodachromer makes no network
+requested by the user or the person installing or operating it. Remjet makes no network
 connections: no telemetry, no update checks, no accounts. The only exception is the project link in
 the About box, which opens in your web browser if you click it.
 
 ## License and credits
 
-Kodachromer is free software under the **GNU General Public License v3.0 or later**; see
+Remjet is free software under the **GNU General Public License v3.0 or later**; see
 [LICENSE](LICENSE). Raw decoding uses [rawler](https://github.com/dnglab/dnglab) (LGPL-2.1).
 The user interface uses [egui](https://github.com/emilk/egui). Other dependencies and their licenses
 are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 *Kodachrome* and *Kodak* are trademarks of Eastman Kodak Company, and *Leica* is a trademark of
-Leica Camera AG. Kodachromer is an independent project, not affiliated with or endorsed by either.
+Leica Camera AG. Remjet is an independent project, not affiliated with or endorsed by either.
 The film curves are digitised from Kodak's publicly available technical data, solely to emulate
 the film's look.
 

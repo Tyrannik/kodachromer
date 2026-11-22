@@ -1,4 +1,4 @@
-//! Kodachromer — desktop app for developing Leica M9 DNGs with film looks.
+//! Remjet — desktop app for developing Leica M9 DNGs with film looks.
 //!
 //! Layout: library (left), preview (centre), edit + export panel (right).
 //! All decoding/rendering happens on worker threads; the UI only uploads
@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::egui;
-use kodachromer_core::develop::{self, CameraImage, Quality};
-use kodachromer_core::edit::{self, Edit, ExportOptions, OutputMode};
-use kodachromer_core::film::FilmPreset;
-use kodachromer_core::{output, presets, raw};
+use remjet_core::develop::{self, CameraImage, Quality};
+use remjet_core::edit::{self, Edit, ExportOptions, OutputMode};
+use remjet_core::film::FilmPreset;
+use remjet_core::{output, presets, raw};
 use image::RgbImage;
 use rawler::decoders::Orientation;
 use serde::{Deserialize, Serialize};
@@ -36,17 +36,17 @@ fn main() -> eframe::Result {
     let start_folder = std::env::args().nth(1).map(PathBuf::from);
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1500.0, 950.0])
-        .with_title(format!("Kodachromer {VERSION}"));
+        .with_title(format!("Remjet {VERSION}"));
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon-256.png")) {
         viewport = viewport.with_icon(icon);
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("Kodachromer", options, Box::new(move |cc| Ok(Box::new(FilmApp::new(cc, start_folder)))))
+    eframe::run_native("Remjet", options, Box::new(move |cc| Ok(Box::new(FilmApp::new(cc, start_folder)))))
 }
 
 // ------------------------------------------------------------- app settings
 
-/// App-wide preferences, stored in %APPDATA%\Kodachromer\settings.json.
+/// App-wide preferences, stored in %APPDATA%\Remjet\settings.json.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
@@ -58,7 +58,7 @@ struct Settings {
 
 impl Settings {
     fn path() -> Option<PathBuf> {
-        kodachromer_core::paths::data_dir().map(|d| d.join("settings.json"))
+        remjet_core::paths::data_dir().map(|d| d.join("settings.json"))
     }
     fn load() -> Self {
         Self::path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
@@ -380,7 +380,9 @@ struct Keys {
 /// on the clipboard is never mistaken for settings).
 #[derive(Serialize, Deserialize)]
 struct ClipboardSettings {
-    kodachromer_settings: Edit,
+    /// Also reads settings copied by Kodachromer (the app's former name).
+    #[serde(alias = "kodachromer_settings")]
+    remjet_settings: Edit,
 }
 
 /// Human-readable summary of what differs between two edits.
@@ -534,7 +536,7 @@ impl FilmApp {
         // store (and removes them), keeping the photo folder clean.
         let imported = self.edited.iter().filter(|p| edit::has_legacy_sidecar(p)).filter(|p| edit::load(p).is_some()).count();
         if imported > 0 {
-            self.show_toast(format!("Moved {imported} edit file(s) out of the photo folder into Kodachromer's edit store"));
+            self.show_toast(format!("Moved {imported} edit file(s) out of the photo folder into Remjet's edit store"));
         }
         self.status = format!("{} DNGs in {}", files.len(), folder.display());
         self.thumbs.clear();
@@ -656,7 +658,7 @@ impl FilmApp {
         self.save_if_changed();
         self.clipboard = Some(self.edit.clone());
         // Also on the system clipboard, so settings survive a restart.
-        if let Ok(json) = serde_json::to_string(&ClipboardSettings { kodachromer_settings: self.edit.clone() }) {
+        if let Ok(json) = serde_json::to_string(&ClipboardSettings { remjet_settings: self.edit.clone() }) {
             ctx.copy_text(json);
         }
         let name = self.current_path().map(|p| file_name(p)).unwrap_or_default();
@@ -666,7 +668,7 @@ impl FilmApp {
     fn paste_settings(&mut self, ctx: &egui::Context, from_text: Option<&str>) {
         // Prefer settings pasted from the system clipboard (e.g. copied in an
         // earlier session); fall back to the in-app clipboard.
-        let parsed = from_text.and_then(|t| serde_json::from_str::<ClipboardSettings>(t.trim()).ok()).map(|c| c.kodachromer_settings);
+        let parsed = from_text.and_then(|t| serde_json::from_str::<ClipboardSettings>(t.trim()).ok()).map(|c| c.remjet_settings);
         let Some(clip) = parsed.or_else(|| self.clipboard.clone()) else {
             self.show_toast("Nothing to paste — copy an image's settings first (Ctrl+C)".into());
             return;
@@ -924,17 +926,17 @@ impl FilmApp {
             });
         });
         let mut open = self.show_about;
-        egui::Window::new("About Kodachromer").open(&mut open).collapsible(false).resizable(false).default_width(420.0).show(ui.ctx(), |ui| {
-            ui.heading(format!("Kodachromer {VERSION}"));
+        egui::Window::new("About Remjet").open(&mut open).collapsible(false).resizable(false).default_width(420.0).show(ui.ctx(), |ui| {
+            ui.heading(format!("Remjet {VERSION}"));
             ui.label("Film emulation for Leica M9 DNGs, starting with Kodachrome 64 (scanned-slide look).");
-            ui.label(egui::RichText::new("Alpha software: expect rough edges. Your DNGs are never modified, and nothing is written into your photo folders: edits are kept in Kodachromer's own data folder.").small());
+            ui.label(egui::RichText::new("Alpha software: expect rough edges. Your DNGs are never modified, and nothing is written into your photo folders: edits are kept in Remjet's own data folder.").small());
             ui.add_space(6.0);
             ui.hyperlink_to("Project page, issues and source", REPO_URL);
             ui.add_space(6.0);
             ui.label(egui::RichText::new("Licensed under the GNU GPL v3 or later. Raw decoding by rawler (LGPL-2.1).").small());
             ui.label(
                 egui::RichText::new(
-                    "Kodachrome and Kodak are trademarks of Eastman Kodak Company. Kodachromer is an independent project, \
+                    "Kodachrome and Kodak are trademarks of Eastman Kodak Company. Remjet is an independent project, \
                      not affiliated with or endorsed by Kodak or Leica. Film curves are digitised from Kodak's published \
                      technical data (E-55) for emulation purposes.",
                 )
@@ -1519,7 +1521,7 @@ fn draw_toast(ctx: &egui::Context, toast: &mut Option<(String, std::time::Instan
         return;
     }
     let alpha = if age < SHOW { 1.0 } else { 1.0 - (age - SHOW) / FADE };
-    egui::Area::new(egui::Id::unique("kodachromer-toast"))
+    egui::Area::new(egui::Id::unique("remjet-toast"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -40.0))
         .interactable(false)

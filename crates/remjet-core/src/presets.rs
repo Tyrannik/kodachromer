@@ -1,6 +1,6 @@
 //! Film preset registry: built-in presets (compiled in) plus the user's own
 //! presets and tuned overrides, stored as TOML in
-//! `%APPDATA%\Kodachromer\presets\<id>.toml`. A user file with a built-in's id
+//! `%APPDATA%\Remjet\presets\<id>.toml`. A user file with a built-in's id
 //! overrides that built-in everywhere (preview, thumbnails, export, CLI).
 
 use std::path::PathBuf;

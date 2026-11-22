@@ -1,4 +1,4 @@
-//! Core image processing for Kodachromer: DNG decoding, colour
+//! Core image processing for Remjet: DNG decoding, colour
 //! pipeline and film emulation. Deliberately free of any UI code so it can be
 //! reused by the desktop app, the CLI, and (later) other platforms.
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.3
+
+- **Renamed to Remjet** (formerly Kodachromer): the executables are now `remjet.exe` and
+  `remjet-cli.exe`, and the repository is <https://github.com/Tyrannik/remjet>.
+- Your edits, settings and tuned films move automatically from `%APPDATA%\Kodachromer` to
+  `%APPDATA%\Remjet` on first start. Settings copied to the clipboard by Kodachromer still paste.
+- `REMJET_DATA_DIR` replaces `KODACHROMER_DATA_DIR` (the old name still works).
+
 ## 0.1.0-alpha.2
 
 - **Projected slide output** alongside the scanned look: full density range, flare-limited deep

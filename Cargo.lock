@@ -2039,43 +2039,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
-name = "kodachromer"
-version = "0.1.0-alpha.2"
-dependencies = [
- "anyhow",
- "eframe",
- "image",
- "kodachromer-core",
- "rawler",
- "rfd",
- "serde",
- "serde_json",
- "winresource",
-]
-
-[[package]]
-name = "kodachromer-cli"
-version = "0.1.0-alpha.2"
-dependencies = [
- "anyhow",
- "kodachromer-core",
-]
-
-[[package]]
-name = "kodachromer-core"
-version = "0.1.0-alpha.2"
-dependencies = [
- "anyhow",
- "image",
- "jpeg-encoder",
- "rawler",
- "rayon",
- "serde",
- "serde_json",
- "toml 1.2.2+spec-1.1.0",
-]
-
-[[package]]
 name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3279,6 +3242,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "remjet"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "anyhow",
+ "eframe",
+ "image",
+ "rawler",
+ "remjet-core",
+ "rfd",
+ "serde",
+ "serde_json",
+ "winresource",
+]
+
+[[package]]
+name = "remjet-cli"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "anyhow",
+ "remjet-core",
+]
+
+[[package]]
+name = "remjet-core"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "anyhow",
+ "image",
+ "jpeg-encoder",
+ "rawler",
+ "rayon",
+ "serde",
+ "serde_json",
+ "toml 1.2.2+spec-1.1.0",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "kodachromer"
+name = "remjet"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ description.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 eframe = "0.37.0"
-kodachromer-core = { version = "0.1.0-alpha.1", path = "../kodachromer-core" }
+remjet-core = { version = "0.1.0-alpha.3", path = "../remjet-core" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 rawler = "0.8.0"
 rfd = "0.18.0"

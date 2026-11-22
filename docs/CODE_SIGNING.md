@@ -1,6 +1,6 @@
 # Code signing with SignPath Foundation
 
-This is the maintainer checklist for getting Kodachromer's Windows binaries signed for free by the
+This is the maintainer checklist for getting Remjet's Windows binaries signed for free by the
 [SignPath Foundation](https://signpath.org), so Windows SmartScreen stops warning about an unknown
 publisher. Their conditions are at <https://signpath.org/terms>.
 
@@ -9,10 +9,10 @@ publisher. Their conditions are at <https://signpath.org/terms>.
 | Requirement (SignPath Foundation terms) | Status |
 |---|---|
 | OSI-approved license, no proprietary components, no commercial dual licensing | ✅ GPL-3.0-or-later; all dependencies are OSS (see THIRD_PARTY.md) |
-| Already released in the form that will be signed | ✅ Zip of `kodachromer.exe` + `kodachromer-cli.exe` on GitHub Releases |
+| Already released in the form that will be signed | ✅ Zip of `remjet.exe` + `remjet-cli.exe` on GitHub Releases |
 | Functionality described on the download page | ✅ README and release notes |
 | Built from source in a verifiable way on a trusted build system | ✅ `.github/workflows/release.yml` on GitHub-hosted runners |
-| Product name and version in the binaries | ✅ `ProductName = Kodachromer`, version from `Cargo.toml` (embedded by `crates/kodachromer/build.rs`) |
+| Product name and version in the binaries | ✅ `ProductName = Remjet`, version from `Cargo.toml` (embedded by `crates/remjet/build.rs`) |
 | "Code signing policy" section with roles and a privacy statement | ✅ README, *Code signing policy* |
 | Multi-factor authentication for every team member (GitHub and SignPath) | ☐ **Maintainer to confirm** (GitHub → Settings → Password and authentication) |
 | Every release manually approved for signing | ☐ Set up in SignPath (approver = maintainer) |
@@ -22,13 +22,13 @@ publisher. Their conditions are at <https://signpath.org/terms>.
 
 1. **Enable 2FA on GitHub** if it isn't already on (an authenticator app or passkey).
 2. **Apply** at <https://signpath.org/apply>. Typical answers:
-   - Project: Kodachromer, <https://github.com/Tyrannik/kodachromer>, license GPL-3.0-or-later.
+   - Project: Remjet, <https://github.com/Tyrannik/remjet>, license GPL-3.0-or-later.
    - Description: free, open-source Windows app that develops Leica M9 raw (DNG) photos with film
      emulation (Kodachrome 64). No network access, no installer.
    - Build system: GitHub Actions, GitHub-hosted runners, workflow `.github/workflows/release.yml`.
-   - Artifacts: a zip containing two PE executables (`kodachromer.exe`, `kodachromer-cli.exe`) plus
+   - Artifacts: a zip containing two PE executables (`remjet.exe`, `remjet-cli.exe`) plus
      text files.
-   - Releases: <https://github.com/Tyrannik/kodachromer/releases>.
+   - Releases: <https://github.com/Tyrannik/remjet/releases>.
 3. **When accepted**, SignPath sets up an organization and project. In SignPath:
    - Add the **GitHub.com** trusted build system and link it to the project.
    - Use (or paste) the artifact configuration below.
@@ -58,11 +58,11 @@ The workflow uploads the package folder as a GitHub artifact (SignPath receives 
 <?xml version="1.0" encoding="utf-8"?>
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
   <zip-file>
-    <directory path="Kodachromer-*-windows-x64">
-      <pe-file path="kodachromer.exe" product-name="Kodachromer" product-version="${version}">
+    <directory path="Remjet-*-windows-x64">
+      <pe-file path="remjet.exe" product-name="Remjet" product-version="${version}">
         <authenticode-sign />
       </pe-file>
-      <pe-file path="kodachromer-cli.exe">
+      <pe-file path="remjet-cli.exe">
         <authenticode-sign />
       </pe-file>
     </directory>
