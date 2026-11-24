@@ -11,3 +11,4 @@ pub mod output;
 pub mod paths;
 pub mod presets;
 pub mod raw;
+pub mod sensor;

@@ -6,6 +6,8 @@ use anyhow::{Context, Result, bail};
 use rawler::imgop::sensor::Demosaic;
 use rawler::imgop::sensor::bayer::ppg::PPGDemosaic;
 use rawler::imgop::sensor::bayer::superpixel::Superpixel3Channel;
+use rawler::imgop::sensor::xtrans::bilinear::XTransBilinearDemosaic;
+use rawler::imgop::sensor::xtrans::markesteijn::XTransMarkesteijnDemosaic;
 use rawler::imgop::xyz::Illuminant;
 use rawler::imgop::{Dim2, Point, Rect};
 use rawler::pixarray::PixF32;
@@ -67,6 +69,26 @@ fn color_matrix(raw: &RawImage, illuminant: Illuminant) -> Option<Mat3> {
     (m.len() == 9).then(|| [0, 1, 2].map(|i| [0, 1, 2].map(|j| m[i * 3 + j] as f64)))
 }
 
+/// The two colour matrices the DNG interpolation needs: (A, D65).
+///
+/// Most files have both. Files without a D65 matrix use the closest daylight
+/// one they have (D55, D50, D75 ...), and files with a single matrix use it
+/// for both ends, which is what the DNG spec does for single-illuminant
+/// profiles.
+fn color_matrices(raw: &RawImage) -> Option<(Mat3, Mat3)> {
+    use Illuminant::*;
+    let daylight = [D65, D55, D75, D50, Daylight, FineWeather, CloudyWeather, Flash, Shade, C];
+    let warm = [A, Tungsten, IsoStudioTungsten];
+    let any = || {
+        let mut keys: Vec<_> = raw.color_matrix.keys().copied().collect();
+        keys.sort_by_key(|k| *k as u16);
+        keys.into_iter().find_map(|k| color_matrix(raw, k))
+    };
+    let d65 = daylight.iter().find_map(|&i| color_matrix(raw, i)).or_else(any)?;
+    let a = warm.iter().find_map(|&i| color_matrix(raw, i)).unwrap_or(d65);
+    Some((a, d65))
+}
+
 /// Demosaiced, white-balanced camera RGB plus what's needed to finish the
 /// colour transform. Cache this: re-running [`to_working`] with different
 /// white-balance tweaks or exposure is cheap, demosaicing is not.
@@ -78,6 +100,9 @@ pub struct CameraImage {
     pub pixels: Vec<[f32; 3]>,
     /// White balance multipliers already applied to `pixels`.
     pub wb: [f32; 3],
+    /// Sensor pixel pitch in micrometres (of the full-resolution sensor, not
+    /// of this possibly downscaled copy), for physically sized film effects.
+    pub pixel_pitch_um: f64,
     cm_a: Mat3,
     cm_d65: Mat3,
     baseline_ev: f32,
@@ -147,7 +172,16 @@ impl CameraImage {
     }
 
     fn clone_meta(&self) -> CameraImage {
-        CameraImage { width: 0, height: 0, pixels: Vec::new(), wb: self.wb, cm_a: self.cm_a, cm_d65: self.cm_d65, baseline_ev: self.baseline_ev }
+        CameraImage {
+            width: 0,
+            height: 0,
+            pixels: Vec::new(),
+            wb: self.wb,
+            pixel_pitch_um: self.pixel_pitch_um,
+            cm_a: self.cm_a,
+            cm_d65: self.cm_d65,
+            baseline_ev: self.baseline_ev,
+        }
     }
 }
 
@@ -185,61 +219,133 @@ pub fn sharpen(img: &mut LinearImage, amount: f32, sigma: f32) {
     });
 }
 
+/// Chroma noise reduction strength (Gaussian sigma in full-resolution
+/// pixels) by sensor type. Colour noise is a per-pixel effect, so this stays in
+/// pixels rather than scaling with pitch. The M9's CCD was tuned at 1.5; the
+/// X-Trans pattern spreads demosaic colour error over a 6x6 tile, so it gets a
+/// little more.
+const CHROMA_SIGMA_BAYER: f32 = 1.5;
+const CHROMA_SIGMA_XTRANS: f32 = 2.0;
+
 /// Levels, white balance and demosaic. `wb = None` uses the as-shot balance.
+///
+/// Handles Bayer and Fujifilm X-Trans mosaics, and linear (already
+/// demosaiced) DNGs. Monochrome sensors and floating-point data are not
+/// supported.
 pub fn demosaic(raw: &RawImage, wb: Option<[f32; 3]>, quality: Quality) -> Result<CameraImage> {
-    let RawPhotometricInterpretation::Cfa(cfa_config) = &raw.photometric else {
-        bail!("only Bayer sensors are supported");
-    };
-    let cfa = &cfa_config.cfa;
-    if raw.cpp != 1 {
-        bail!("expected one sample per pixel, got {}", raw.cpp);
-    }
     let RawImageData::Integer(data) = &raw.data else {
-        bail!("floating-point raw data is not supported");
+        bail!("floating-point (HDR) raw data is not supported");
     };
-
+    let (cm_a, cm_d65) = color_matrices(raw).context("raw file has no colour matrix")?;
     let wb = wb.unwrap_or_else(|| as_shot_wb(raw));
-    let black = raw.blacklevel.as_bayer_array();
-    let white = raw.whitelevel.as_bayer_array();
-
-    // 1. Black/white levels and white balance on the mosaic. Clipping every
-    //    channel at 1.0 keeps blown highlights neutral instead of pink.
     let (w, h) = (raw.width, raw.height);
-    let mut mosaic = vec![0f32; w * h];
-    mosaic.par_chunks_exact_mut(w).enumerate().for_each(|(row, out)| {
-        let src = &data[row * w..(row + 1) * w];
-        for (col, (o, &v)) in out.iter_mut().zip(src).enumerate() {
-            let pos = (row % 2) * 2 + col % 2;
-            let lin = (v as f32 - black[pos]) / (white[pos] - black[pos]);
-            *o = (lin.max(0.0) * wb[cfa.color_at(row, col)]).min(1.0);
-        }
-    });
-
-    // 2. Demosaic straight into the default crop.
     let crop = raw.crop_area.unwrap_or(Rect::new(Point::new(0, 0), Dim2::new(w, h)));
-    let pixels = PixF32::new_with(mosaic, w, h);
-    let rgb = match quality {
-        Quality::Full => PPGDemosaic::new().demosaic(&pixels, cfa, &cfa_config.colors, crop),
-        Quality::Half => Superpixel3Channel::new().demosaic(&pixels, cfa, &cfa_config.colors, crop),
-    };
-    let dim = rgb.dim();
 
-    let cm_d65 = color_matrix(raw, Illuminant::D65).context("DNG has no D65 colour matrix")?;
-    let cm_a = color_matrix(raw, Illuminant::A).unwrap_or(cm_d65);
-    let mut pixels = rgb.into_inner();
-    // Film has no colour noise; the M9's CCD has plenty. Smooth chroma only.
-    let chroma_sigma = match quality {
-        Quality::Full => 1.5,
-        Quality::Half => 0.75,
+    let (mut pixels, dim, chroma_sigma) = match &raw.photometric {
+        RawPhotometricInterpretation::Cfa(cfa_config) => {
+            let cfa = &cfa_config.cfa;
+            if raw.cpp != 1 {
+                bail!("expected one sample per pixel, got {}", raw.cpp);
+            }
+            let xtrans = cfa.width == 6 && cfa.height == 6;
+            let bayer = cfa.width == 2 && cfa.height == 2 && cfa.unique_colors() == 3;
+            if !(bayer || xtrans) {
+                bail!("unsupported colour filter pattern ({}x{}, {} colours)", cfa.width, cfa.height, cfa.unique_colors());
+            }
+            let black = raw.blacklevel.as_bayer_array();
+            let white = raw.whitelevel.as_bayer_array();
+
+            // 1. Black/white levels and white balance on the mosaic. Clipping
+            //    every channel at 1.0 keeps blown highlights neutral, not pink.
+            let mut mosaic = vec![0f32; w * h];
+            mosaic.par_chunks_exact_mut(w).enumerate().for_each(|(row, out)| {
+                let src = &data[row * w..(row + 1) * w];
+                for (col, (o, &v)) in out.iter_mut().zip(src).enumerate() {
+                    let pos = (row % 2) * 2 + col % 2;
+                    let lin = (v as f32 - black[pos]) / (white[pos] - black[pos]);
+                    *o = (lin.max(0.0) * wb[cfa.color_at(row, col).min(2)]).min(1.0);
+                }
+            });
+
+            // 2. Demosaic straight into the default crop.
+            let mosaic = PixF32::new_with(mosaic, w, h);
+            let colors = &cfa_config.colors;
+            let rgb = match (xtrans, quality) {
+                (false, Quality::Full) => PPGDemosaic::new().demosaic(&mosaic, cfa, colors, crop),
+                (false, Quality::Half) => Superpixel3Channel::new().demosaic(&mosaic, cfa, colors, crop),
+                (true, Quality::Full) => XTransMarkesteijnDemosaic::new_pass_1().demosaic(&mosaic, cfa, colors, crop),
+                (true, Quality::Half) => XTransBilinearDemosaic::new().demosaic(&mosaic, cfa, colors, crop),
+            };
+            let dim = rgb.dim();
+            let (mut pixels, mut dim) = (rgb.into_inner(), (dim.w, dim.h));
+            // X-Trans has no 2x2 superpixel: halve after a fast demosaic.
+            if xtrans && quality == Quality::Half {
+                (pixels, dim) = box_half(&pixels, dim.0, dim.1);
+            }
+            let sigma = if xtrans { CHROMA_SIGMA_XTRANS } else { CHROMA_SIGMA_BAYER };
+            (pixels, dim, sigma)
+        }
+        RawPhotometricInterpretation::LinearRaw => {
+            if raw.cpp != 3 {
+                bail!("linear raw with {} samples per pixel is not supported", raw.cpp);
+            }
+            let per_channel = |v: Vec<f32>| -> [f32; 3] {
+                match v.len() {
+                    0 => [0.0; 3],
+                    1 | 2 => [v[0]; 3],
+                    _ => [v[0], v[1], v[2]],
+                }
+            };
+            let black = per_channel(raw.blacklevel.as_vec());
+            let white = per_channel(raw.whitelevel.as_vec());
+            let (cx, cy, cw, ch) = (crop.p.x, crop.p.y, crop.d.w, crop.d.h);
+            let mut out = vec![[0f32; 3]; cw * ch];
+            out.par_chunks_exact_mut(cw).enumerate().for_each(|(r, row)| {
+                let src = &data[((cy + r) * w + cx) * 3..((cy + r) * w + cx + cw) * 3];
+                for (o, s) in row.iter_mut().zip(src.chunks_exact(3)) {
+                    *o = [0, 1, 2].map(|c| (((s[c] as f32 - black[c]) / (white[c] - black[c])).max(0.0) * wb[c]).min(1.0));
+                }
+            });
+            let (out, dim) = if quality == Quality::Half { box_half(&out, cw, ch) } else { (out, (cw, ch)) };
+            // Already demosaiced (and usually denoised) by whatever wrote it.
+            (out, dim, 0.0)
+        }
+        RawPhotometricInterpretation::BlackIsZero => bail!("monochrome sensors are not supported"),
     };
-    chroma_denoise(&mut pixels, dim.w, dim.h, chroma_sigma);
+
+    // Film has no colour noise; digital sensors do. Smooth chroma only.
+    let chroma_sigma = match quality {
+        Quality::Full => chroma_sigma,
+        Quality::Half => chroma_sigma * 0.5,
+    };
+    if chroma_sigma > 0.0 {
+        chroma_denoise(&mut pixels, dim.0, dim.1, chroma_sigma);
+    }
     Ok(CameraImage {
-        width: dim.w,
-        height: dim.h,
+        width: dim.0,
+        height: dim.1,
         pixels,
         wb,
+        pixel_pitch_um: crate::sensor::geometry(raw).pixel_pitch_um,
         cm_a,
         cm_d65,
         baseline_ev: baseline_exposure(raw),
     })
+}
+
+/// 2x2 box downscale (odd edges dropped).
+fn box_half(pixels: &[[f32; 3]], w: usize, h: usize) -> (Vec<[f32; 3]>, (usize, usize)) {
+    let (hw, hh) = ((w / 2).max(1), (h / 2).max(1));
+    if w < 2 || h < 2 {
+        return (pixels.to_vec(), (w, h));
+    }
+    let out = (0..hw * hh)
+        .into_par_iter()
+        .map(|i| {
+            let (x, y) = (i % hw * 2, i / hw * 2);
+            let [a, b, c, d] = [pixels[y * w + x], pixels[y * w + x + 1], pixels[(y + 1) * w + x], pixels[(y + 1) * w + x + 1]];
+            [0, 1, 2].map(|k| (a[k] + b[k] + c[k] + d[k]) * 0.25)
+        })
+        .collect();
+    (out, (hw, hh))
 }

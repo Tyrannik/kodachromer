@@ -23,11 +23,30 @@ pub struct RawInfo {
     pub crop: Option<(usize, usize, usize, usize)>,
     pub has_linearization_table: bool,
     pub is_float: bool,
+    pub sensor: crate::sensor::SensorGeometry,
+}
+
+/// File extensions of raw formats Remjet opens (all decoded by rawler).
+/// Bayer and X-Trans sensors work; Sigma Foveon (X3F) and monochrome bodies
+/// are listed by rawler but are rejected when developed.
+pub const RAW_EXTENSIONS: &[&str] = &[
+    "dng", "3fr", "arw", "cr2", "cr3", "crw", "dcr", "erf", "fff", "iiq", "kdc", "mef", "mos", "mrw", "nef", "nrw",
+    "orf", "ori", "pef", "raf", "rw2", "rwl", "srw",
+];
+
+/// True if `path` has a raw file extension Remjet can open.
+pub fn is_raw_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| RAW_EXTENSIONS.iter().any(|r| r.eq_ignore_ascii_case(e)))
 }
 
 /// Decode a raw file fully (rawler applies any linearisation table here).
+/// Also picks up the EXIF tags [`crate::sensor`] needs for the pixel pitch.
 pub fn load(path: &Path) -> Result<RawImage> {
-    rawler::decode_file(path).with_context(|| format!("decoding {}", path.display()))
+    let mut image = rawler::decode_file(path).with_context(|| format!("decoding {}", path.display()))?;
+    crate::sensor::stash_exif_hints(path, &mut image);
+    Ok(image)
 }
 
 pub fn info(image: &RawImage) -> RawInfo {
@@ -46,5 +65,21 @@ pub fn info(image: &RawImage) -> RawInfo {
         crop: image.crop_area.map(|r| (r.p.x, r.p.y, r.d.w, r.d.h)),
         has_linearization_table: image.dng_tags.contains_key(&TAG_LINEARIZATION_TABLE),
         is_float: matches!(image.data, RawImageData::Float(_)),
+        sensor: crate::sensor::geometry(image),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_extensions() {
+        for name in ["a.dng", "a.DNG", "b.CR3", "c.nef", "d.RAF", "e.arw", "f.rw2"] {
+            assert!(is_raw_file(Path::new(name)), "{name}");
+        }
+        for name in ["a.jpg", "a.tif", "a.json", "dng", "a"] {
+            assert!(!is_raw_file(Path::new(name)), "{name}");
+        }
     }
 }

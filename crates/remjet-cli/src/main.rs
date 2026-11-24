@@ -13,7 +13,7 @@ use remjet_core::edit::ExportOptions;
 use remjet_core::film::{FilmModel, FilmParams, FilmPreset};
 use remjet_core::{output, raw};
 
-const USAGE: &str = "usage:\n  remjet-cli info <file.dng | folder>...\n  remjet-cli render <file.dng | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | <preset.toml>] [--grain <amount>]\n  remjet-cli export <file.dng | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each DNG's saved app edit; default output is <folder>/exports)";
+const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | <preset.toml>] [--grain <amount>]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each file's saved app edit; default output is <folder>/exports)";
 
 /// Batch export using the app's sidecar edits.
 fn export(args: &[String]) -> Result<()> {
@@ -79,7 +79,7 @@ fn collect_dngs(paths: &[String]) -> Result<Vec<PathBuf>> {
         if p.is_dir() {
             for entry in std::fs::read_dir(p)? {
                 let path = entry?.path();
-                if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dng")) {
+                if raw::is_raw_file(&path) {
                     out.push(path);
                 }
             }
@@ -100,12 +100,12 @@ fn info(paths: &[String]) -> Result<()> {
             Ok(image) => {
                 let i = raw::info(&image);
                 println!(
-                    "{}: {} {} {}x{} {}bit black={:?} white={:?} wb={:?} baseline_ev={} orient={:?} matrices={:?} crop={:?} lintable={} ({} ms)",
+                    "{}: {} {} {}x{} {}bit black={:?} white={:?} wb={:?} baseline_ev={} orient={:?} matrices={:?} crop={:?} lintable={} sensor=[{}] ({} ms)",
                     path.file_name().unwrap_or_default().to_string_lossy(),
                     i.make, i.model, i.width, i.height, i.bits_per_sample,
                     i.black_levels, i.white_levels, develop::as_shot_wb(&image),
                     develop::baseline_exposure(&image), image.orientation,
-                    i.color_matrix_illuminants, i.crop, i.has_linearization_table,
+                    i.color_matrix_illuminants, i.crop, i.has_linearization_table, i.sensor,
                     start.elapsed().as_millis()
                 );
             }
@@ -170,7 +170,8 @@ fn render(args: &[String]) -> Result<()> {
         let linear = develop::develop(&raw_image, &params)?;
         let encoded = match &preset {
             Some(p) => {
-                let model = FilmModel::new(p, &film_params)?;
+                let sensor = remjet_core::sensor::geometry(&raw_image);
+                let model = FilmModel::new(p, &FilmParams { sensor_pixel_um: sensor.pixel_pitch_um, ..film_params.clone() })?;
                 let seed = seed_for(path);
                 output::display_to_srgb8(&model.apply(&linear, seed))
             }
