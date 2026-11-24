@@ -1,0 +1,190 @@
+# Kodak Professional Ektachrome E100 (E-6) — spectral model.
+#
+# Built entirely from Kodak publication E-4000 (KODAK PROFESSIONAL
+# EKTACHROME Film E100, technical data), digitised from the PDF's vector
+# plots:
+#   - characteristic curves: Status A density, E-6 process, daylight
+#   - spectral sensitivity of the three layers (log sensitivity, 380–700 nm)
+#   - spectral dye density of the cyan, magenta and yellow dyes, and the
+#     visual neutral they form (normalised to 1.0, 5000 K viewing)
+#   - MTF of each layer
+#   - diffuse rms granularity: 8
+# Nothing here is shared with the Kodachrome 64 matrix model: layer
+# exposure, dye amounts and colour on the light box are all computed from
+# these spectra (see crates/remjet-core/src/spectral.rs).
+# Everything under [look], [scan], [grain] (except rms_granularity),
+# [halation] and [projection] is a tunable aesthetic parameter.
+
+id = "ektachrome-e100"
+name = "Ektachrome E100"
+version = 1
+process = "reversal"
+
+[exposure]
+# Scene-linear camera value treated as an 18% grey card (app calibration).
+grey_linear = 0.12
+# Its exposure on the film: ISO 100 with standard meter calibration,
+# H = 8 / S lux-seconds -> log10(0.08).
+log_h_ref = -1.10
+
+[look]
+# The datasheet gives no interimage data; the measured curves and dyes
+# already carry the film's colour, so this starts at 0.
+interimage = 0.0
+contrast = 1.0
+flare = 0.004
+
+[scan]
+# Density the scanner maps to black. Lower = more open shadows.
+black_density = 3.0
+# 0 = the slide's own colour on a 5000 K light box (E100 runs slightly cool),
+# 1 = scanner grey-balanced at mid-grey.
+neutral_balance = 1.0
+gamma = 1.15
+white_balance = [1.0, 1.0, 1.0]
+
+[grain]
+# Diffuse rms granularity (x1000, 48 µm aperture) from E-4000, applied to the
+# developed dye amounts.
+rms_granularity = 8.0
+correlation = 0.85
+blur_px = 1.1
+amount = 0.4
+
+[halation]
+# Glow from light reflecting off the film base into the red layer (per-image
+# Halation slider; 0 by default). Same character settings as Kodachrome 64.
+radius_px = 40.0
+threshold_stops = 1.75
+tint = [1.0, 0.22, 0.04]
+
+[projection]
+# Used when an image's Output is "Projected slide".
+flare = 0.003
+white_balance = [1.04, 1.0, 0.90]
+falloff_stops = 0.35
+
+[datasheet]
+densitometry = "status_a"
+
+# Status A density vs log10 exposure (lux-seconds).
+[datasheet.curves.red]
+start = -2.80
+step = 0.05
+values = [
+  3.241, 3.240, 3.239, 3.235, 3.232, 3.224, 3.211, 3.195, 3.172, 3.148,
+  3.117, 3.083, 3.044, 2.998, 2.947, 2.887, 2.813, 2.736, 2.657, 2.568,
+  2.476, 2.382, 2.281, 2.178, 2.073, 1.967, 1.863, 1.764, 1.665, 1.571,
+  1.474, 1.376, 1.284, 1.202, 1.122, 1.051, 0.984, 0.919, 0.855, 0.793,
+  0.731, 0.672, 0.620, 0.568, 0.522, 0.476, 0.430, 0.388, 0.351, 0.317,
+  0.288, 0.260, 0.233, 0.208, 0.189, 0.171, 0.156,
+]
+
+[datasheet.curves.green]
+start = -2.80
+step = 0.05
+values = [
+  3.601, 3.601, 3.599, 3.593, 3.581, 3.566, 3.549, 3.527, 3.501, 3.469,
+  3.433, 3.390, 3.341, 3.282, 3.217, 3.142, 3.055, 2.961, 2.864, 2.757,
+  2.651, 2.542, 2.429, 2.311, 2.192, 2.073, 1.958, 1.848, 1.739, 1.637,
+  1.535, 1.428, 1.329, 1.244, 1.161, 1.086, 1.013, 0.944, 0.876, 0.810,
+  0.745, 0.684, 0.629, 0.575, 0.526, 0.479, 0.433, 0.391, 0.354, 0.320,
+  0.289, 0.260, 0.233, 0.208, 0.189, 0.174, 0.161,
+]
+
+[datasheet.curves.blue]
+start = -2.80
+step = 0.05
+values = [
+  3.754, 3.747, 3.738, 3.727, 3.715, 3.697, 3.672, 3.642, 3.605, 3.562,
+  3.513, 3.455, 3.392, 3.314, 3.232, 3.143, 3.038, 2.931, 2.823, 2.704,
+  2.587, 2.470, 2.353, 2.231, 2.110, 1.990, 1.873, 1.762, 1.649, 1.545,
+  1.445, 1.346, 1.256, 1.174, 1.094, 1.021, 0.951, 0.882, 0.814, 0.751,
+  0.689, 0.631, 0.577, 0.525, 0.477, 0.433, 0.392, 0.354, 0.319, 0.286,
+  0.257, 0.234, 0.215, 0.199, 0.182, 0.165, 0.150,
+]
+
+# Log10 spectral sensitivity vs wavelength (nm) of the red-, green- and
+# blue-sensitive layers (cyan-, magenta-, yellow-forming).
+[datasheet.sensitivity.red]
+start = 560.00
+step = 5
+values = [
+  -1.025, -0.978, -0.902, -0.648, -0.263, 0.130, 0.411, 0.606, 0.717, 0.794,
+  0.843, 0.912, 0.996, 1.063, 1.151, 1.235, 1.320, 1.399, 1.442, 1.353,
+  0.913, 0.334, -0.109, -0.454, -0.751, -1.012,
+]
+
+[datasheet.sensitivity.green]
+start = 480.00
+step = 5
+values = [
+  -0.373, -0.106, 0.133, 0.321, 0.485, 0.588, 0.663, 0.729, 0.796, 0.880,
+  0.963, 1.035, 1.111, 1.211, 1.206, 1.170, 1.185, 1.203, 1.190, 1.223,
+  1.034, 0.626, 0.096, -0.250, -0.604, -1.001,
+]
+
+[datasheet.sensitivity.blue]
+start = 400.00
+step = 5
+values = [
+  0.867, 1.128, 1.282, 1.360, 1.430, 1.512, 1.504, 1.363, 1.320, 1.314,
+  1.340, 1.378, 1.383, 1.335, 1.148, 0.799, 0.480, 0.255, 0.108, 0.015,
+  -0.102, -0.262, -0.433, -0.581, -0.785,
+]
+
+# Spectral diffuse density vs wavelength (nm) of each dye, and their neutral.
+[datasheet.dyes.cyan]
+start = 405.00
+step = 5
+values = [
+  0.141, 0.127, 0.113, 0.099, 0.088, 0.080, 0.072, 0.064, 0.062, 0.057,
+  0.052, 0.048, 0.045, 0.043, 0.041, 0.041, 0.042, 0.044, 0.047, 0.051,
+  0.057, 0.065, 0.073, 0.083, 0.095, 0.107, 0.122, 0.139, 0.161, 0.185,
+  0.210, 0.237, 0.270, 0.306, 0.343, 0.381, 0.428, 0.480, 0.531, 0.582,
+  0.631, 0.679, 0.728, 0.774, 0.811, 0.844, 0.876, 0.908, 0.924, 0.932,
+  0.941, 0.948, 0.939, 0.924, 0.910, 0.892, 0.861, 0.825, 0.789, 0.752,
+]
+
+[datasheet.dyes.magenta]
+start = 405.00
+step = 5
+values = [
+  0.084, 0.094, 0.103, 0.113, 0.126, 0.140, 0.146, 0.148, 0.138, 0.138,
+  0.144, 0.151, 0.171, 0.198, 0.224, 0.251, 0.295, 0.344, 0.393, 0.445,
+  0.510, 0.579, 0.648, 0.716, 0.771, 0.819, 0.866, 0.912, 0.920, 0.918,
+  0.915, 0.911, 0.865, 0.808, 0.752, 0.691, 0.614, 0.532, 0.450, 0.369,
+  0.314, 0.267, 0.219, 0.174, 0.147, 0.124, 0.101, 0.080, 0.065, 0.054,
+  0.046, 0.038, 0.032, 0.026, 0.022, 0.019, 0.016, 0.014, 0.012, 0.010,
+]
+
+[datasheet.dyes.yellow]
+start = 405.00
+step = 5
+values = [
+  0.560, 0.626, 0.691, 0.756, 0.808, 0.856, 0.888, 0.915, 0.928, 0.913,
+  0.895, 0.877, 0.817, 0.751, 0.685, 0.619, 0.547, 0.473, 0.399, 0.327,
+  0.271, 0.224, 0.176, 0.130, 0.103, 0.081, 0.059, 0.039, 0.029, 0.022,
+  0.015, 0.011, 0.008, 0.007, 0.006, 0.006, 0.006, 0.006, 0.006, 0.006,
+  0.006, 0.006, 0.006, 0.006, 0.007, 0.007, 0.008, 0.008, 0.009, 0.009,
+  0.010, 0.010, 0.010, 0.010, 0.010, 0.010,
+]
+
+[datasheet.dyes.neutral]
+start = 405.00
+step = 5
+values = [
+  0.772, 0.833, 0.894, 0.955, 1.011, 1.063, 1.092, 1.115, 1.120, 1.102,
+  1.082, 1.062, 1.024, 0.982, 0.940, 0.899, 0.871, 0.850, 0.829, 0.810,
+  0.828, 0.857, 0.886, 0.917, 0.955, 0.996, 1.037, 1.076, 1.100, 1.116,
+  1.132, 1.147, 1.132, 1.110, 1.087, 1.063, 1.034, 1.004, 0.973, 0.944,
+  0.938, 0.939, 0.939, 0.941, 0.950, 0.961, 0.972, 0.982, 0.987, 0.987,
+  0.986, 0.985, 0.971, 0.951, 0.931, 0.909, 0.875, 0.838, 0.801, 0.763,
+]
+
+[datasheet.mtf]
+# Response (%) vs spatial frequency (cycles/mm).
+frequencies = [3, 5, 7, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80]
+red = [96.2, 90.7, 87, 82, 72, 67.6, 56.5, 47.3, 31.5, 23.1, 16.6, 12.2, 8.3]
+green = [98.4, 95.6, 93.5, 90.3, 81.8, 80.2, 69.7, 62, 47, 36.6, 30.2, 24.2, 18.7]
+blue = [96.5, 95.7, 94.7, 94.7, 86.4, 85.8, 75.2, 70.1, 55.8, 46, 39.8, 34.1, 28.9]

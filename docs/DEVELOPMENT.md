@@ -9,7 +9,7 @@ How Remjet is put together, for anyone reading or extending the code.
 | `crates/remjet-core` | Everything that touches pixels: DNG decoding, colour science, the film model, grain, halation, edits/sidecars, export, EXIF. No UI. |
 | `crates/remjet` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
 | `crates/remjet-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
-| `presets/` | Film presets as TOML data. `kodachrome64.toml` is compiled in as the built-in film. |
+| `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml` and `portra400.toml` (spectral model). |
 | `assets/` | Icon. |
 
 ## Image pipeline
@@ -54,11 +54,56 @@ How Remjet is put together, for anyone reading or extending the code.
 - "Tune look" edits a copy of the film preset live; Save writes a user override, which preview,
   thumbnails, export and the CLI all pick up.
 
+## Spectral film model
+
+Ektachrome E100 and Portra 400 use `spectral.rs` instead of the Kodachrome matrix model. A preset
+with `process = "reversal"` or `"negative"` carries its datasheet as `[datasheet]` (and, for a
+negative, its paper as `[print]`); everything else is computed from those spectra when the film is
+first used, and cached:
+
+1. **Layer exposure.** The datasheet's log spectral sensitivities, lit by CIE D55, are integrated
+   over a set of synthetic reflectances (Gaussian bumps, smooth edges, a flat grey). A 3x3 matrix
+   from ProPhoto (D50) to relative layer exposure is fitted by weighted least squares; white
+   exposes every layer equally. The grey card lands on `exposure.log_h_ref`: ISO speed with
+   standard meter calibration for E100 (log10 8/100), the datasheet's *Log H Ref* for Portra.
+2. **Reversal (E-6).** At each log exposure, Newton's method finds the cyan, magenta and yellow dye
+   amounts whose combined spectrum reads as the published Status A densities through the ISO 5-3
+   Status A response. A neutral exposure reproduces the curves exactly. Grain is added to the dye
+   amounts.
+3. **Negative (C-41) + print (RA-4).** Per-layer Status M density comes straight from the curves.
+   Printing density is Status M times a per-channel gain computed from the negative's mid-scale
+   neutral and minimum-density spectra, read through the paper's spectral sensitivity instead of
+   Status M. Paper log exposure is printer light minus printing density; printer lights are solved
+   so the reference grey prints neutral at `print.grey_density`. The paper's dye amounts come from
+   its Status A curves and dye spectra, as in step 2, over a flat base.
+4. **Viewing.** Transmittance (or reflectance) spectra under D50 with the CIE 1931 observer give
+   XYZ, held in a 41³ table of log XYZ over dye amounts. That is adapted to D65 (Bradford), shown as
+   linear sRGB with the film base or paper white as white, and handed to the same scanner stage as
+   Kodachrome.
+5. **Sharpness.** Each layer's MTF is fitted with `(1 + k) G(σ) − k G(σ_wide)` (the second term
+   produces Portra's response above 100%) and applied to that layer's exposure at the M9's pixel
+   pitch.
+
+Reference tables are in `cie.rs`: CIE 015:2018 colour-matching functions and daylight basis, and
+the ISO 5-3 Status A and M responses. Portra's grain strength and the print grey aim are not in the
+datasheets; both are marked as estimates in the preset.
+
 ## Film data sources
 
 - Kodak publication **E-55**, *KODACHROME 25, 64 and 200 Professional Film* (06/2009), Kodachrome 64
   page: characteristic curves (Status A, K-14, daylight), spectral dye-density curves and diffuse rms
   granularity. The PDF's plots are vector paths; they were digitised from the path coordinates.
+- Kodak publication **E-4000**, *KODAK PROFESSIONAL EKTACHROME Film E100*: characteristic curves
+  (Status A, E-6), spectral sensitivity, spectral dye density (and visual neutral), MTF, diffuse
+  rms granularity.
+- Kodak publication **E-4050**, *KODAK PROFESSIONAL PORTRA 400 Film*: characteristic curves
+  (Status M, C-41, with Log H Ref), spectral sensitivity, spectral density of a mid-scale neutral
+  and of minimum density, MTF.
+- Kodak publication **E-4070**, *KODAK PROFESSIONAL ENDURA PREMIER Paper*: characteristic curves
+  (Status A reflection), spectral sensitivity, spectral dye density.
+- **ISO 5-3:1995** (ANSI/NAPM IT2.18), Tables 3 and 4: Status A and Status M spectral products.
+- **CIE 015:2018**: CIE 1931 2° observer and the daylight basis functions S0, S1, S2.
+- All Kodak plots are vector paths in the PDFs and were digitised from the path coordinates.
 - Look parameters marked as tunable in the preset (sensitivity overlap, interimage, scanner gamma and
   balance, grain strength, halation) were set by eye against scanned K64 slides.
 
@@ -66,12 +111,16 @@ How Remjet is put together, for anyone reading or extending the code.
 
 `cargo test --release` covers the colour maths, the film model (neutral exposures reproduce the
 datasheet curve; grey scans neutral; highlight shoulder; halation; near-black noise is not
-amplified; cropped renders have identical grain), sidecars and their migration, EXIF structure, and
+amplified; cropped renders have identical grain), the spectral films (E100 and paper neutrals
+reproduce their Status A curves; E100's dyes sum to the published visual neutral of 1.0; Portra's
+grey prints neutral at the aim; monotonic ramps from black to white), sidecars and their migration, EXIF structure, and
 the orientation maths used by zoom.
 
 ## Ideas / roadmap
 
-- More films as data presets (Ektachrome, Kodachrome 25, Velvia, Portra, Tri-X).
+- More films as data presets (Kodachrome 25, Ektar 100, Portra 160, Tri-X); the catalogue of
+  Kodak datasheets is a good starting point.
+- A *scanned negative* output for Portra alongside the optical print.
 - Highlight reconstruction for clipped raw channels.
 - Lens corrections (M9 vignetting/colour shading), crop and straighten.
 - Embedded ICC profile in exports; TIFF export.

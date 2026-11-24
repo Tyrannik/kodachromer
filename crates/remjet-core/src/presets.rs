@@ -10,7 +10,11 @@ use anyhow::{Context, Result};
 use crate::film::FilmPreset;
 
 /// (id, display name) of the presets compiled into the app.
-pub const BUILTINS: &[(&str, &str)] = &[("kodachrome64", "Kodachrome 64")];
+pub const BUILTINS: &[(&str, &str)] = &[
+    ("kodachrome64", "Kodachrome 64"),
+    ("ektachrome-e100", "Ektachrome E100"),
+    ("portra400", "Portra 400"),
+];
 
 pub fn user_dir() -> Option<PathBuf> {
     crate::paths::data_dir().map(|d| d.join("presets"))
@@ -103,10 +107,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn toml_round_trip_preserves_preset() {
-        let p = FilmPreset::builtin("kodachrome64").unwrap();
-        let back = FilmPreset::from_toml(&p.to_toml().unwrap()).unwrap();
-        assert_eq!(p, back);
+    fn toml_round_trip_preserves_presets() {
+        for (id, name) in BUILTINS {
+            let p = FilmPreset::builtin(id).unwrap();
+            assert_eq!(p.name, *name);
+            let back = FilmPreset::from_toml(&p.to_toml().unwrap()).unwrap();
+            assert_eq!(p, back, "{id}");
+        }
     }
 
     #[test]
