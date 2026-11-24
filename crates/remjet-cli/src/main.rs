@@ -36,12 +36,16 @@ fn export(args: &[String]) -> Result<()> {
         bail!(USAGE);
     }
     let files = collect_dngs(&inputs)?;
-    let (mut ok, mut failed, mut skipped) = (0, 0, 0);
+    let (mut ok, mut failed, mut skipped, mut not_m9) = (0, 0, 0, 0);
     for path in &files {
         let saved = remjet_core::edit::load(path);
         if edited_only && saved.is_none() {
             skipped += 1;
             continue;
+        }
+        if let Ok(Some(w)) = raw::check_camera(path) {
+            not_m9 += 1;
+            warn_camera(path, &w);
         }
         let dir = out_dir.clone().unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("exports"));
         let start = Instant::now();
@@ -57,6 +61,7 @@ fn export(args: &[String]) -> Result<()> {
         }
     }
     println!("{ok} exported, {failed} failed, {skipped} skipped");
+    print_not_m9(not_m9);
     if failed > 0 {
         bail!("{failed} export(s) failed");
     }
@@ -93,12 +98,16 @@ fn collect_dngs(paths: &[String]) -> Result<Vec<PathBuf>> {
 
 fn info(paths: &[String]) -> Result<()> {
     let files = collect_dngs(paths)?;
-    let mut failures = 0;
+    let (mut failures, mut not_m9) = (0, 0);
     for path in &files {
         let start = Instant::now();
         match raw::load(path) {
             Ok(image) => {
                 let i = raw::info(&image);
+                if let Some(w) = i.camera_warning() {
+                    not_m9 += 1;
+                    warn_camera(path, &w);
+                }
                 println!(
                     "{}: {} {} {}x{} {}bit black={:?} white={:?} wb={:?} baseline_ev={} orient={:?} matrices={:?} crop={:?} lintable={} ({} ms)",
                     path.file_name().unwrap_or_default().to_string_lossy(),
@@ -116,7 +125,19 @@ fn info(paths: &[String]) -> Result<()> {
         }
     }
     println!("{} files, {} failed", files.len(), failures);
+    print_not_m9(not_m9);
     Ok(())
+}
+
+/// Warn (on stderr, so piped output stays clean) that a file isn't from an M9.
+fn warn_camera(path: &Path, warning: &str) {
+    eprintln!("warning: {}: {warning}", path.file_name().unwrap_or_default().to_string_lossy());
+}
+
+fn print_not_m9(count: usize) {
+    if count > 0 {
+        eprintln!("warning: {count} file(s) are not from a Leica M9; colours may be off");
+    }
 }
 
 /// Stable grain seed from the file name, so re-renders match.
@@ -164,9 +185,14 @@ fn render(args: &[String]) -> Result<()> {
     std::fs::create_dir_all(&out_dir)?;
 
     let files = collect_dngs(&inputs)?;
+    let mut not_m9 = 0;
     for path in &files {
         let start = Instant::now();
         let raw_image = raw::load(path)?;
+        if let Some(w) = raw::info(&raw_image).camera_warning() {
+            not_m9 += 1;
+            warn_camera(path, &w);
+        }
         let linear = develop::develop(&raw_image, &params)?;
         let encoded = match &preset {
             Some(p) => {
@@ -189,5 +215,6 @@ fn render(args: &[String]) -> Result<()> {
             start.elapsed().as_millis()
         );
     }
+    print_not_m9(not_m9);
     Ok(())
 }

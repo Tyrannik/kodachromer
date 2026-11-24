@@ -112,7 +112,14 @@ struct PreviewJob {
 }
 
 enum PreviewOut {
-    Fit { after: egui::ColorImage, before: egui::ColorImage, thumb: egui::ColorImage, full_size: [usize; 2] },
+    Fit {
+        after: egui::ColorImage,
+        before: egui::ColorImage,
+        thumb: egui::ColorImage,
+        full_size: [usize; 2],
+        /// Set when the file isn't from a Leica M9.
+        camera_warning: Option<String>,
+    },
     Patch { image: egui::ColorImage, region: [f32; 4] },
     Full { image: egui::ColorImage, before: bool },
     /// Nothing new to send (result already delivered earlier).
@@ -173,6 +180,17 @@ fn map_rect(r: [f32; 4], f: impl Fn(f32, f32) -> (f32, f32)) -> [f32; 4] {
     [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)]
 }
 
+/// The preview worker's downscaled copy of the current image.
+struct FitCache {
+    path: PathBuf,
+    cam: CameraImage,
+    /// Pixel scale of `cam` relative to the full-resolution frame.
+    scale: f64,
+    orientation: Orientation,
+    full_size: [usize; 2],
+    camera_warning: Option<String>,
+}
+
 /// Renders previews on a background thread.
 ///
 /// * Fit: from a cached half-size, downscaled image (fast for slider moves).
@@ -183,7 +201,7 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
     let (job_tx, job_rx) = channel::<PreviewJob>();
     let (res_tx, res_rx) = channel::<PreviewResult>();
     thread::spawn(move || {
-        let mut fit: Option<(PathBuf, CameraImage, f64, Orientation, [usize; 2])> = None;
+        let mut fit: Option<FitCache> = None;
         let mut full: Option<(PathBuf, CameraImage, Orientation)> = None;
         // Last full renders delivered, so repeat requests cost nothing.
         let mut full_after: Option<(PathBuf, RenderKey)> = None;
@@ -209,21 +227,34 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
             };
             let alive = match &job.mode {
                 Mode::Fit => send((|| {
-                    if fit.as_ref().is_none_or(|c| c.0 != job.path) {
+                    if fit.as_ref().is_none_or(|c| c.path != job.path) {
                         let raw_image = raw::load(&job.path)?;
                         let cam = develop::demosaic(&raw_image, None, Quality::Half)?;
                         let (w, h) = raw_image.crop_area.map_or((raw_image.width, raw_image.height), |r| (r.d.w, r.d.h));
                         let full_size = if swaps_axes(raw_image.orientation) { [h, w] } else { [w, h] };
                         let (small, f) = cam.downscale_to(PREVIEW_EDGE);
-                        fit = Some((job.path.clone(), small, 2.0 * f as f64, raw_image.orientation, full_size));
+                        fit = Some(FitCache {
+                            path: job.path.clone(),
+                            cam: small,
+                            scale: 2.0 * f as f64,
+                            orientation: raw_image.orientation,
+                            full_size,
+                            camera_warning: raw::info(&raw_image).camera_warning(),
+                        });
                     }
-                    let (_, cam, scale, o, full_size) = fit.as_ref().expect("filled above");
+                    let FitCache { cam, scale, orientation: o, full_size, camera_warning: warning, .. } = fit.as_ref().expect("filled above");
                     let after = output::apply_orientation(edit::render_with(cam, &job.edit, job.preset.as_ref(), *scale, seed)?, *o);
                     let neutral = Edit { preset: None, ..job.edit.clone() };
                     let before = output::apply_orientation(edit::render(cam, &neutral, *scale, seed)?, *o);
                     let th = (THUMB_EDGE * after.height() as usize / after.width() as usize) as u32;
                     let thumb = image::imageops::thumbnail(&after, THUMB_EDGE as u32, th);
-                    Ok(PreviewOut::Fit { after: to_color(&after), before: to_color(&before), thumb: to_color(&thumb), full_size: *full_size })
+                    Ok(PreviewOut::Fit {
+                        after: to_color(&after),
+                        before: to_color(&before),
+                        thumb: to_color(&thumb),
+                        full_size: *full_size,
+                        camera_warning: warning.clone(),
+                    })
                 })()),
                 Mode::Detail { region, before } => {
                     let mut alive = true;
@@ -294,19 +325,30 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
 
 // --------------------------------------------------------------- thumbnails
 
+/// What the thumbnail worker reports for a file.
+enum ThumbMsg {
+    /// Camera check: a warning if the file isn't from a Leica M9.
+    Camera(Option<String>),
+    Image(RgbImage),
+}
+
 /// Renders library thumbnails in the background; stops if the folder changes.
-fn spawn_thumbnails(ctx: egui::Context, files: Vec<PathBuf>, generation: Arc<AtomicU64>, tx: Sender<(u64, PathBuf, RgbImage)>) {
+/// Each file's camera is checked first (from metadata, so it's quick).
+fn spawn_thumbnails(ctx: egui::Context, files: Vec<PathBuf>, generation: Arc<AtomicU64>, tx: Sender<(u64, PathBuf, ThumbMsg)>) {
     let my_gen = generation.load(Ordering::SeqCst);
     thread::spawn(move || {
         for path in files {
             if generation.load(Ordering::SeqCst) != my_gen {
                 return;
             }
+            if let Ok(warning) = raw::check_camera(&path) {
+                let _ = tx.send((my_gen, path.clone(), ThumbMsg::Camera(warning)));
+            }
             let e = edit::load(&path).unwrap_or_default();
             if let Ok(img) = edit::render_file(&path, &e, Quality::Half, Some(THUMB_EDGE)) {
-                let _ = tx.send((my_gen, path, img));
-                ctx.request_repaint();
+                let _ = tx.send((my_gen, path, ThumbMsg::Image(img)));
             }
+            ctx.request_repaint();
         }
     });
 }
@@ -452,8 +494,10 @@ struct FilmApp {
 
     thumbs: HashMap<PathBuf, egui::TextureHandle>,
     thumb_gen: Arc<AtomicU64>,
-    thumb_tx: Sender<(u64, PathBuf, RgbImage)>,
-    thumb_rx: Receiver<(u64, PathBuf, RgbImage)>,
+    thumb_tx: Sender<(u64, PathBuf, ThumbMsg)>,
+    thumb_rx: Receiver<(u64, PathBuf, ThumbMsg)>,
+    /// Files that aren't from a Leica M9, with the warning to show.
+    camera_warnings: HashMap<PathBuf, String>,
 
     batch: Option<Batch>,
     status: String,
@@ -507,6 +551,7 @@ impl FilmApp {
             thumb_gen: Arc::new(AtomicU64::new(0)),
             thumb_tx,
             thumb_rx,
+            camera_warnings: HashMap::new(),
             batch: None,
             show_about: false,
             history: HashMap::new(),
@@ -540,6 +585,7 @@ impl FilmApp {
         }
         self.status = format!("{} DNGs in {}", files.len(), folder.display());
         self.thumbs.clear();
+        self.camera_warnings.clear();
         self.thumb_gen.fetch_add(1, Ordering::SeqCst);
         spawn_thumbnails(ctx.clone(), files.clone(), self.thumb_gen.clone(), self.thumb_tx.clone());
         self.files = files;
@@ -763,7 +809,8 @@ impl FilmApp {
                 ..lin
             };
             match res.out {
-                Ok(PreviewOut::Fit { after, before, thumb, full_size }) => {
+                Ok(PreviewOut::Fit { after, before, thumb, full_size, camera_warning }) => {
+                    self.set_camera_warning(&res.path, camera_warning);
                     self.thumbs.insert(res.path.clone(), ctx.load_texture(thumb_name(&res.path), thumb, lin));
                     self.fit_after = Some(ctx.load_texture("after", after, lin));
                     self.fit_before = Some(ctx.load_texture("before", before, lin));
@@ -802,10 +849,16 @@ impl FilmApp {
             }
         }
         let generation = self.thumb_gen.load(Ordering::SeqCst);
-        while let Ok((g, path, img)) = self.thumb_rx.try_recv() {
-            if g == generation {
-                let tex = ctx.load_texture(thumb_name(&path), to_color(&img), egui::TextureOptions::LINEAR);
-                self.thumbs.insert(path, tex);
+        while let Ok((g, path, msg)) = self.thumb_rx.try_recv() {
+            if g != generation {
+                continue;
+            }
+            match msg {
+                ThumbMsg::Camera(warning) => self.set_camera_warning(&path, warning),
+                ThumbMsg::Image(img) => {
+                    let tex = ctx.load_texture(thumb_name(&path), to_color(&img), egui::TextureOptions::LINEAR);
+                    self.thumbs.insert(path, tex);
+                }
             }
         }
         if let Some(b) = &self.batch {
@@ -819,6 +872,17 @@ impl FilmApp {
                     (false, n) => format!("Exported {} of {}; {n} failed: {}", done - n, b.total, failures.join("; ")),
                 };
                 self.batch = None;
+            }
+        }
+    }
+
+    fn set_camera_warning(&mut self, path: &Path, warning: Option<String>) {
+        match warning {
+            Some(w) => {
+                self.camera_warnings.insert(path.to_path_buf(), w);
+            }
+            None => {
+                self.camera_warnings.remove(path);
             }
         }
     }
@@ -955,6 +1019,12 @@ impl FilmApp {
             }
         });
         ui.label(egui::RichText::new("Ctrl/Shift-click to select several").small().weak());
+        if !self.camera_warnings.is_empty() {
+            let n = self.camera_warnings.len();
+            ui.label(egui::RichText::new(format!("⚠ {n} not from a Leica M9")).small().color(ui.visuals().warn_fg_color)).on_hover_text(
+                "Remjet's colour and film looks are tuned for the Leica M9 sensor. Files from other cameras still open, but colours may be off.",
+            );
+        }
         ui.add_space(4.0);
         let mut clicked = None;
         let nav = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight));
@@ -985,7 +1055,12 @@ impl FilmApp {
                             }
                         }
                         let mark = if self.edited.contains(path) { " ●" } else { "" };
-                        ui.label(format!("{}{mark}", file_name(path)));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(format!("{}{mark}", file_name(path)));
+                            if let Some(w) = self.camera_warnings.get(path) {
+                                ui.label(egui::RichText::new("⚠ not M9").small().color(ui.visuals().warn_fg_color)).on_hover_text(w);
+                            }
+                        });
                     })
                     .response
                     .interact(egui::Sense::click());
@@ -1440,6 +1515,9 @@ impl FilmApp {
         if zoomed && resp.hovered() {
             ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
         }
+        if let Some(w) = self.current_path().and_then(|p| self.camera_warnings.get(p)) {
+            camera_banner(ui, rect, w);
+        }
     }
 }
 
@@ -1539,6 +1617,19 @@ fn badge(ui: &mut egui::Ui, rect: egui::Rect, text: &str) {
         egui::Rect::from_min_size(rect.min + egui::vec2(10.0, 10.0), egui::vec2(160.0, 24.0)),
         egui::Label::new(egui::RichText::new(text).strong().background_color(egui::Color32::from_black_alpha(160))),
     );
+}
+
+/// Persistent warning across the top of the preview (below the zoom badge).
+fn camera_banner(ui: &mut egui::Ui, rect: egui::Rect, warning: &str) {
+    let area = egui::Rect::from_min_max(rect.left_top() + egui::vec2(10.0, 42.0), egui::pos2(rect.right() - 10.0, rect.bottom()));
+    let mut banner = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
+    egui::Frame::new()
+        .fill(egui::Color32::from_black_alpha(190))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(&mut banner, |ui| {
+            ui.label(egui::RichText::new(format!("⚠ {warning}")).strong().color(ui.visuals().warn_fg_color));
+        });
 }
 
 fn to_color(img: &RgbImage) -> egui::ColorImage {

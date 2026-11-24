@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Warning for files that aren't from a Leica M9.** The library flags them ("⚠ not M9", with a
+  count at the top), and the preview shows a banner naming the camera. They still open and export
+  as before. The M9-P, M9 Titanium and M-E count as M9s; Monochrom bodies don't.
+- `remjet-cli info`, `render` and `export` print the same warning on stderr for each such file.
+
 ## 0.1.0-alpha.3
 
 - **Renamed to Remjet** (formerly Kodachromer): the executables are now `remjet.exe` and
