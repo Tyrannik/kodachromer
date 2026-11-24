@@ -3274,6 +3274,7 @@ dependencies = [
  "anyhow",
  "image",
  "jpeg-encoder",
+ "moxcms",
  "rawler",
  "rayon",
  "serde",

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Exported JPGs are now tagged as sRGB** with an embedded ICC profile, so colour-managed viewers and
+  wide-gamut displays show them as intended instead of guessing (and oversaturating). Pixels are
+  unchanged, and camera metadata (EXIF) is still carried over when enabled.
+
 ## 0.1.0-alpha.3
 
 - **Renamed to Remjet** (formerly Kodachromer): the executables are now `remjet.exe` and
