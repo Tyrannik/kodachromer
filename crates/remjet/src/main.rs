@@ -526,7 +526,7 @@ impl FilmApp {
         let mut files: Vec<PathBuf> = std::fs::read_dir(&folder)
             .map(|rd| {
                 rd.filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dng")))
+                    .filter(|p| raw::is_raw_file(p))
                     .collect()
             })
             .unwrap_or_default();
@@ -538,7 +538,7 @@ impl FilmApp {
         if imported > 0 {
             self.show_toast(format!("Moved {imported} edit file(s) out of the photo folder into Remjet's edit store"));
         }
-        self.status = format!("{} DNGs in {}", files.len(), folder.display());
+        self.status = format!("{} raw files in {}", files.len(), folder.display());
         self.thumbs.clear();
         self.thumb_gen.fetch_add(1, Ordering::SeqCst);
         spawn_thumbnails(ctx.clone(), files.clone(), self.thumb_gen.clone(), self.thumb_tx.clone());
@@ -1331,7 +1331,7 @@ impl FilmApp {
         let rect = ui.max_rect();
         let ppp = ui.ctx().pixels_per_point();
         if self.selected.is_none() {
-            ui.centered_and_justified(|ui| ui.label("Open a folder of DNGs (📂 at the top left)."));
+            ui.centered_and_justified(|ui| ui.label("Open a folder of raw files (📂 at the top left)."));
             return;
         }
 

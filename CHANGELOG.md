@@ -14,7 +14,20 @@
     paper (E-4070): the negative's printing densities, computed from its measured spectra and the
     paper's sensitivity, expose the paper through its own curves and dyes.
   - Both use each layer's published MTF (including Portra's adjacency boost) for film sharpness.
+    Like grain and halation, it is a size on the film, so it scales with each camera's pixel pitch.
 - For negatives, the Output menu shows the print paper instead of Scanned / Projected slide.
+
+## 0.1.0-alpha.4
+
+- **Film looks scale to each camera's sensor.** Grain, grain clump size and halation are physical
+  sizes on the film, so they are now converted to pixels with each file's own pixel pitch instead of
+  the M9's. The pitch comes from the crop factor (35 mm-equivalent focal length) or the EXIF
+  focal-plane resolution, and falls back to full frame. Leica M9-family files render exactly as before.
+- **More raw files open:** the app and CLI list all raw formats rawler reads (CR2, CR3, NEF, ARW,
+  RAF, RW2, ORF, PEF and others), not only DNG.
+- **Fujifilm X-Trans** sensors and **linear DNGs** now develop.
+- Files without a D65 colour matrix use their closest daylight matrix instead of failing.
+- `remjet-cli info` prints each file's sensor pitch and where it came from.
 
 ## 0.1.0-alpha.3
 

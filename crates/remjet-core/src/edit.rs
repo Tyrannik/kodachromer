@@ -264,6 +264,7 @@ fn render_framed(
                 halation: edit.halation as f64,
                 output: edit.output,
                 pixel_scale,
+                sensor_pixel_um: cam.pixel_pitch_um,
                 seed,
                 ..Default::default()
             };

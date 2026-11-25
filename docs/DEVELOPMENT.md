@@ -81,7 +81,7 @@ first used, and cached:
    linear sRGB with the film base or paper white as white, and handed to the same scanner stage as
    Kodachrome.
 5. **Sharpness.** Each layer's MTF is fitted with `(1 + k) G(σ) − k G(σ_wide)` (the second term
-   produces Portra's response above 100%) and applied to that layer's exposure at the M9's pixel
+   produces Portra's response above 100%) and applied to that layer's exposure at the camera's pixel
    pitch.
 
 Reference tables are in `cie.rs`: CIE 015:2018 colour-matching functions and daylight basis, and
