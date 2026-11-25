@@ -113,7 +113,8 @@ pub struct Grain {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Halation {
-    /// Spread of the glow (Gaussian sigma) in pixels at full M9 resolution.
+    /// Spread of the glow (Gaussian sigma) in pixels at full M9 resolution
+    /// (6.9 µm pixels); other sensors get the same spread in micrometres.
     pub radius_px: f64,
     /// Highlights brighter than this many stops over mid-grey produce glow.
     pub threshold_stops: f64,
@@ -212,9 +213,13 @@ pub struct FilmParams {
     pub grain_size: f64,
     /// Seed so grain is stable across re-renders of the same image.
     pub seed: u64,
-    /// Size of one output pixel relative to a full-resolution M9 pixel
+    /// Size of one output pixel relative to a full-resolution sensor pixel
     /// (2.0 for half-size previews), so grain looks the same at any size.
     pub pixel_scale: f64,
+    /// Pixel pitch of the camera's sensor in micrometres. Grain, sharpness
+    /// and halation are physical sizes on the film and are converted to
+    /// pixels with this. Defaults to the M9 the looks were tuned on.
+    pub sensor_pixel_um: f64,
     /// Highlight shoulder, -1 (hold back / recover) .. +1 (open up).
     pub highlights: f64,
     /// Halation strength, 0 (off) .. 1 (strong).
@@ -231,6 +236,7 @@ impl Default for FilmParams {
             grain_size: 1.0,
             seed: 0,
             pixel_scale: 1.0,
+            sensor_pixel_um: M9_PIXEL_UM,
             highlights: 0.0,
             halation: 0.0,
             output: OutputMode::Scan,
@@ -286,8 +292,7 @@ impl Default for Projection {
 /// Highlight knee: one stop above mid-grey, in log10 exposure.
 const HIGHLIGHT_KNEE: f32 = 0.30;
 
-/// M9 sensor pixel pitch on a 36 mm wide frame, in micrometres.
-const M9_PIXEL_UM: f64 = 36_000.0 / 5212.0;
+use crate::sensor::M9_PIXEL_UM;
 /// Aperture used for the datasheet granularity measurement.
 const GRANULARITY_APERTURE_UM: f64 = 48.0;
 
@@ -373,8 +378,20 @@ impl FilmModel {
         // downscaled output by how much box-averaging f x f pixels shrinks
         // noise whose correlation area is ~4*pi*blur^2 (clumpier grain
         // survives downscaling better, as it does visually).
-        let full_blur = p.grain.blur_px * params.grain_size.clamp(0.25, 6.0);
+        //
+        // Pixel sizes in presets are at M9 resolution; `k` sensor pixels
+        // cover the same distance on the film as one M9 pixel. The film's
+        // grain field is fixed in micrometres, so per-pixel std follows
+        // Selwyn's law (std x sqrt(area) constant) over whichever is larger,
+        // the pixel or the grain's own correlation length: finer pixels show
+        // more noise per pixel until they resolve the clumps themselves.
+        let pixel_um = if params.sensor_pixel_um.is_finite() && params.sensor_pixel_um > 0.0 { params.sensor_pixel_um } else { M9_PIXEL_UM };
+        let k = M9_PIXEL_UM / pixel_um;
+        let blur_m9 = p.grain.blur_px * params.grain_size.clamp(0.25, 6.0);
+        let full_blur = blur_m9 * k;
+        let clump_um = (4.0 * std::f64::consts::PI).sqrt() * blur_m9 * M9_PIXEL_UM;
         let sigma_full = p.grain.rms_granularity / 1000.0 * (GRANULARITY_APERTURE_UM / M9_PIXEL_UM)
+            * (M9_PIXEL_UM.max(clump_um) / pixel_um.max(clump_um))
             * p.grain.amount
             * params.grain;
         let f = params.pixel_scale.max(0.1);
@@ -401,7 +418,7 @@ impl FilmModel {
             scan_wb: p.scan.white_balance.map(|v| v as f32),
             grain_sigma: grain_sigma as f32,
             hal_gain: (params.halation.clamp(0.0, 2.0) * HALATION_GAIN) as f32,
-            hal_sigma: (p.halation.radius_px.max(0.5) / f) as f32,
+            hal_sigma: (p.halation.radius_px.max(0.5) * k / f) as f32,
             hal_threshold: (10f64.powf(grey_log_e - log_offset) * 2f64.powf(p.halation.threshold_stops)) as f32,
             hal_tint: p.halation.tint.map(|v| v as f32),
             output: params.output,
@@ -675,6 +692,69 @@ mod tests {
         let p = FilmPreset::builtin("kodachrome64").unwrap();
         let m = FilmModel::new(&p, &FilmParams { grain, ..Default::default() }).unwrap();
         (p, m)
+    }
+
+    #[test]
+    fn m9_pitch_is_the_default() {
+        let p = FilmPreset::builtin("kodachrome64").unwrap();
+        let a = FilmModel::new(&p, &FilmParams::default()).unwrap();
+        let b = FilmModel::new(&p, &FilmParams { sensor_pixel_um: M9_PIXEL_UM, ..Default::default() }).unwrap();
+        assert_eq!((a.grain_sigma, a.grain_blur, a.hal_sigma), (b.grain_sigma, b.grain_blur, b.hal_sigma));
+        // Nonsense pitches fall back to the M9 rather than breaking the render.
+        for bad in [0.0, -3.0, f64::NAN] {
+            let c = FilmModel::new(&p, &FilmParams { sensor_pixel_um: bad, ..Default::default() }).unwrap();
+            assert_eq!((a.grain_sigma, a.grain_blur, a.hal_sigma), (c.grain_sigma, c.grain_blur, c.hal_sigma));
+        }
+    }
+
+    #[test]
+    fn film_effects_keep_their_physical_size_on_other_sensors() {
+        let p = FilmPreset::builtin("kodachrome64").unwrap();
+        let m9 = FilmModel::new(&p, &FilmParams::default()).unwrap();
+        // A 45 MP full-frame sensor: 4.39 µm pixels, ~1.57x finer than the M9.
+        let pitch = 36_000.0 / 8192.0;
+        let k = (M9_PIXEL_UM / pitch) as f32;
+        let fine = FilmModel::new(&p, &FilmParams { sensor_pixel_um: pitch, ..Default::default() }).unwrap();
+        // Grain clumps and halation spread cover the same micrometres, so
+        // more pixels.
+        assert!((fine.grain_blur / m9.grain_blur - k).abs() < 1e-4);
+        assert!((fine.hal_sigma / m9.hal_sigma - k).abs() < 1e-4);
+        // Kodachrome's clumps (~27 µm) are bigger than both pixels, so the
+        // per-pixel grain strength is unchanged.
+        assert!((fine.grain_sigma - m9.grain_sigma).abs() < 1e-6);
+
+        // Pixels coarser than the clumps average grain away (Selwyn's law).
+        let coarse = FilmModel::new(&p, &FilmParams { sensor_pixel_um: 54.0, ..Default::default() }).unwrap();
+        assert!(coarse.grain_sigma < m9.grain_sigma * 0.6, "{} vs {}", coarse.grain_sigma, m9.grain_sigma);
+    }
+
+    #[test]
+    fn grain_looks_the_same_size_on_a_finer_sensor() {
+        // Render a flat grey on the M9 and on a sensor with half the pitch,
+        // then compare grain over the same physical area: the fine render
+        // box-averaged 2x2 should have about the M9's grain std.
+        let p = FilmPreset::builtin("kodachrome64").unwrap();
+        let std_of = |pixels: &[[f32; 3]]| {
+            let g: Vec<f32> = pixels.iter().map(|p| p[1]).collect();
+            let mean = g.iter().sum::<f32>() / g.len() as f32;
+            (g.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / g.len() as f32).sqrt()
+        };
+        let flat = |n: usize| LinearImage { width: n, height: n, pixels: vec![[0.18; 3]; n * n], cct: 5000.0 };
+        let m9 = FilmModel::new(&p, &FilmParams { halation: 0.0, ..Default::default() }).unwrap().apply(&flat(256), 7);
+        let fine = FilmModel::new(&p, &FilmParams { halation: 0.0, sensor_pixel_um: M9_PIXEL_UM / 2.0, ..Default::default() })
+            .unwrap()
+            .apply(&flat(512), 7);
+        let binned: Vec<[f32; 3]> = (0..256 * 256)
+            .map(|i| {
+                let (x, y) = (i % 256 * 2, i / 256 * 2);
+                let px = |x: usize, y: usize| fine.pixels[y * 512 + x];
+                let s = [px(x, y), px(x + 1, y), px(x, y + 1), px(x + 1, y + 1)];
+                [0, 1, 2].map(|c| s.iter().map(|p| p[c]).sum::<f32>() / 4.0)
+            })
+            .collect();
+        let (a, b) = (std_of(&m9.pixels), std_of(&binned));
+        assert!(a > 0.0);
+        assert!((b / a - 1.0).abs() < 0.1, "M9 grain std {a}, finer sensor binned {b}");
     }
 
     #[test]
