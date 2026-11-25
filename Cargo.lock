@@ -3246,7 +3246,7 @@ dependencies = [
 
 [[package]]
 name = "remjet"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "anyhow",
  "eframe",
@@ -3261,7 +3261,7 @@ dependencies = [
 
 [[package]]
 name = "remjet-cli"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "anyhow",
  "remjet-core",
@@ -3269,11 +3269,12 @@ dependencies = [
 
 [[package]]
 name = "remjet-core"
-version = "0.1.0-alpha.4"
+version = "0.1.0-alpha.5"
 dependencies = [
  "anyhow",
  "image",
  "jpeg-encoder",
+ "moxcms",
  "rawler",
  "rayon",
  "serde",

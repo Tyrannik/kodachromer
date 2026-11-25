@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.5
 
 - **Two new films: Ektachrome E100 and Portra 400.** Each is its own model built from its Kodak
   datasheet, not a re-tuned Kodachrome:
@@ -20,6 +20,9 @@
   count at the top), and the preview shows a banner naming the camera. They still open and develop
   as before. The M9-P, M9 Titanium and M-E count as M9s; Monochrom bodies don't.
 - `remjet-cli info`, `render` and `export` print the same warning on stderr for each such file.
+- **Exported JPGs are now tagged as sRGB** with an embedded ICC profile, so colour-managed viewers and
+  wide-gamut displays show them as intended instead of guessing (and oversaturating). Pixels are
+  unchanged, and camera metadata (EXIF) is still carried over when enabled.
 
 ## 0.1.0-alpha.4
 
