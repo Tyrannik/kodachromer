@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.4
 
 - **Film looks scale to each camera's sensor.** Grain, grain clump size and halation are physical
   sizes on the film, so they are now converted to pixels with each file's own pixel pitch instead of

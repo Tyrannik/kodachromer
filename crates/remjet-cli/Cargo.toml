@@ -8,4 +8,4 @@ description.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-remjet-core = { version = "0.1.0-alpha.3", path = "../remjet-core" }
+remjet-core = { version = "0.1.0-alpha.4", path = "../remjet-core" }
