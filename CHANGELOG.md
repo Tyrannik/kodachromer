@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Two new films: Ektachrome E100 and Portra 400.** Each is its own model built from its Kodak
+  datasheet, not a re-tuned Kodachrome:
+  - A new *spectral* engine fits each film's layer sensitivities from the published spectral
+    sensitivity curves, inverts the Status A or Status M characteristic curves through the
+    published dye spectra, and computes the colour you see from the dyes' spectra under 5000 K
+    light (CIE 1931 observer).
+  - **Ektachrome E100** (E-4000) is a slide film with its own E-6 dyes, scanned or projected like
+    Kodachrome, with its published rms granularity of 8.
+  - **Portra 400** (E-4050) is a colour negative, shown as an optical print on **Endura Premier**
+    paper (E-4070): the negative's printing densities, computed from its measured spectra and the
+    paper's sensitivity, expose the paper through its own curves and dyes.
+  - Both use each layer's published MTF (including Portra's adjacency boost) for film sharpness.
+    Like grain and halation, it is a size on the film, so it scales with each camera's pixel pitch.
+- For negatives, the Output menu shows the print paper instead of Scanned / Projected slide.
+
 ## 0.1.0-alpha.4
 
 - **Film looks scale to each camera's sensor.** Grain, grain clump size and halation are physical

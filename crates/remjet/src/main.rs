@@ -1021,18 +1021,25 @@ impl FilmApp {
             }
             ui.selectable_value(&mut self.edit.preset, None, "None (neutral)");
         });
-        ui.add_enabled_ui(self.edit.preset.is_some(), |ui| {
-            let label = |m: OutputMode| match m {
-                OutputMode::Scan => "Scanned slide",
-                OutputMode::Projection => "Projected slide",
-            };
-            egui::ComboBox::from_label("Output").selected_text(label(self.edit.output)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
-                    .on_hover_text("As a film scanner reads the slide: open shadows, scanner balance.");
-                ui.selectable_value(&mut self.edit.output, OutputMode::Projection, label(OutputMode::Projection))
-                    .on_hover_text("As the slide looks projected: full density range, deep blacks, warm lamp, soft corner falloff.");
+        // Colour negatives are always shown as a print on their paper.
+        let print = self.edit.preset.as_deref().and_then(|id| presets::load(id).ok()).filter(|p| p.is_negative()).and_then(|p| p.print);
+        if let Some(paper) = print {
+            ui.label(format!("Output: optical print on {}", paper.name))
+                .on_hover_text("Colour negatives are printed through the paper's own curves and dyes from Kodak's data.");
+        } else {
+            ui.add_enabled_ui(self.edit.preset.is_some(), |ui| {
+                let label = |m: OutputMode| match m {
+                    OutputMode::Scan => "Scanned slide",
+                    OutputMode::Projection => "Projected slide",
+                };
+                egui::ComboBox::from_label("Output").selected_text(label(self.edit.output)).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
+                        .on_hover_text("As a film scanner reads the slide: open shadows, scanner balance.");
+                    ui.selectable_value(&mut self.edit.output, OutputMode::Projection, label(OutputMode::Projection))
+                        .on_hover_text("As the slide looks projected: full density range, deep blacks, warm lamp, soft corner falloff.");
+                });
             });
-        });
+        }
         ui.add_space(8.0);
 
         ui.spacing_mut().slider_width = 160.0;
@@ -1141,7 +1148,8 @@ impl FilmApp {
             slider64(ui, &mut w.look.interimage, 0.0..=0.6, "Saturation", r.look.interimage);
             slider64(ui, &mut w.scan.gamma, 0.8..=1.6, "Shadow lift", r.scan.gamma);
             slider64(ui, &mut w.scan.black_density, 2.4..=3.8, "Black depth", r.scan.black_density);
-            ui.label(egui::RichText::new("Scanner colour").small());
+            let negative = w.is_negative();
+            ui.label(egui::RichText::new(if negative { "Print colour" } else { "Scanner colour" }).small());
             slider64(ui, &mut w.scan.white_balance[0], 0.85..=1.15, "Red", r.scan.white_balance[0]);
             slider64(ui, &mut w.scan.white_balance[1], 0.85..=1.15, "Green", r.scan.white_balance[1]);
             slider64(ui, &mut w.scan.white_balance[2], 0.85..=1.15, "Blue", r.scan.white_balance[2]);
@@ -1150,11 +1158,13 @@ impl FilmApp {
             let mut colour = 1.0 - w.grain.correlation;
             slider64(ui, &mut colour, 0.0..=1.0, "Colour grain", 1.0 - r.grain.correlation);
             w.grain.correlation = 1.0 - colour;
-            ui.label(egui::RichText::new("Projection (for Projected slide output)").small());
-            slider64(ui, &mut w.projection.flare, 0.0..=0.02, "Screen black", r.projection.flare);
-            slider64(ui, &mut w.projection.falloff_stops, 0.0..=1.5, "Corner falloff", r.projection.falloff_stops);
-            slider64(ui, &mut w.projection.white_balance[0], 0.85..=1.15, "Lamp red", r.projection.white_balance[0]);
-            slider64(ui, &mut w.projection.white_balance[2], 0.75..=1.15, "Lamp blue", r.projection.white_balance[2]);
+            if !negative {
+                ui.label(egui::RichText::new("Projection (for Projected slide output)").small());
+                slider64(ui, &mut w.projection.flare, 0.0..=0.02, "Screen black", r.projection.flare);
+                slider64(ui, &mut w.projection.falloff_stops, 0.0..=1.5, "Corner falloff", r.projection.falloff_stops);
+                slider64(ui, &mut w.projection.white_balance[0], 0.85..=1.15, "Lamp red", r.projection.white_balance[0]);
+                slider64(ui, &mut w.projection.white_balance[2], 0.75..=1.15, "Lamp blue", r.projection.white_balance[2]);
+            }
 
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {

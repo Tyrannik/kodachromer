@@ -1,7 +1,13 @@
-//! Reversal-film emulation: scene-linear working space -> slide densities ->
-//! scanned, display-linear sRGB.
+//! Film emulation: scene-linear working space -> developed film -> scanned
+//! (or projected, or printed) display-linear sRGB.
 //!
-//! Pipeline per pixel:
+//! Two engines share the exposure, grain, halation and scanner stages:
+//! - the *matrix* model below (Kodachrome 64), with a hand-set sensitivity
+//!   matrix and a dye cross-talk matrix;
+//! - the *spectral* model in [`crate::spectral`] (Ektachrome E100, Portra
+//!   400), derived wholly from a datasheet's spectral data.
+//!
+//! Matrix pipeline per pixel:
 //! 1. Working space (linear ProPhoto D50) -> linear Rec.2020 -> layer
 //!    exposures via the preset's sensitivity matrix.
 //! 2. log10 exposure, interimage coupling.
@@ -19,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::color::{self, Mat3};
 use crate::develop::LinearImage;
+use crate::spectral::{self, Datasheet, PrintStock, Process};
 
 // ---------------------------------------------------------------- preset data
 
@@ -27,8 +34,14 @@ pub struct FilmPreset {
     pub id: String,
     pub name: String,
     pub version: u32,
-    pub curves: Curves,
-    pub dyes: Dyes,
+    /// Spectral model process. Absent: the matrix model (`curves`, `dyes`,
+    /// `look.sensitivity` and `exposure.grey_density` are then required).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<Process>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curves: Option<Curves>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dyes: Option<Dyes>,
     pub exposure: Exposure,
     pub look: Look,
     pub scan: Scan,
@@ -37,6 +50,12 @@ pub struct FilmPreset {
     pub halation: Halation,
     #[serde(default)]
     pub projection: Projection,
+    /// Measured data for the spectral model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub datasheet: Option<Datasheet>,
+    /// Print paper for a colour negative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub print: Option<PrintStock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,13 +75,22 @@ pub struct Dyes {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Exposure {
+    /// Scene-linear camera value treated as an 18% grey card.
     pub grey_linear: f64,
-    pub grey_density: f64,
+    /// Matrix model: green density the grey card produces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grey_density: Option<f64>,
+    /// Spectral model: log10 exposure (lux-seconds) of the grey card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_h_ref: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Look {
-    pub sensitivity: Mat3,
+    /// Matrix model only: layer exposure from linear Rec.2020. The spectral
+    /// model derives this from the datasheet's sensitivity curves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensitivity: Option<Mat3>,
     pub interimage: f64,
     /// Scales log exposure around mid-grey: >1 steeper (more contrast).
     #[serde(default = "one")]
@@ -129,14 +157,26 @@ impl Default for Halation {
 }
 
 pub const KODACHROME_64: &str = include_str!("../../../presets/kodachrome64.toml");
+pub const EKTACHROME_E100: &str = include_str!("../../../presets/ektachrome-e100.toml");
+pub const PORTRA_400: &str = include_str!("../../../presets/portra400.toml");
 
 impl FilmPreset {
     pub fn from_toml(text: &str) -> Result<Self> {
         let p: Self = toml::from_str(text).context("parsing film preset")?;
+        if let Some(process) = p.process {
+            let ds = p.datasheet.as_ref().context("a spectral preset needs [datasheet]")?;
+            ds.validate(process, p.print.as_ref())?;
+            p.exposure.log_h_ref.context("a spectral preset needs exposure.log_h_ref")?;
+            return Ok(p);
+        }
+        let c = p.curves.as_ref().context("preset needs [curves] (or a process and [datasheet])")?;
+        let dyes = p.dyes.as_ref().context("preset needs [dyes]")?;
+        p.look.sensitivity.context("preset needs look.sensitivity")?;
+        p.exposure.grey_density.context("preset needs exposure.grey_density")?;
         for (x, y, ch) in [
-            (&p.curves.log_exposure_r, &p.curves.density_r, "r"),
-            (&p.curves.log_exposure_g, &p.curves.density_g, "g"),
-            (&p.curves.log_exposure_b, &p.curves.density_b, "b"),
+            (&c.log_exposure_r, &c.density_r, "r"),
+            (&c.log_exposure_g, &c.density_g, "g"),
+            (&c.log_exposure_b, &c.density_b, "b"),
         ] {
             if x.len() != y.len() || x.len() < 2 {
                 bail!("curve {ch}: log_exposure and density must have the same length (>= 2)");
@@ -145,19 +185,26 @@ impl FilmPreset {
                 bail!("curve {ch}: log_exposure must be strictly increasing");
             }
         }
-        color::inverse(&p.dyes.matrix).context("dye matrix is singular")?;
+        color::inverse(&dyes.matrix).context("dye matrix is singular")?;
         Ok(p)
     }
 
     pub fn builtin(id: &str) -> Result<Self> {
         match id {
             "kodachrome64" => Self::from_toml(KODACHROME_64),
-            _ => bail!("unknown built-in preset '{id}' (available: kodachrome64)"),
+            "ektachrome-e100" => Self::from_toml(EKTACHROME_E100),
+            "portra400" => Self::from_toml(PORTRA_400),
+            _ => bail!("unknown built-in preset '{id}' (available: kodachrome64, ektachrome-e100, portra400)"),
         }
     }
 
     pub fn to_toml(&self) -> Result<String> {
         Ok(toml::to_string_pretty(self)?)
+    }
+
+    /// True for colour negatives, which are always viewed as a print.
+    pub fn is_negative(&self) -> bool {
+        self.process == Some(Process::Negative)
     }
 }
 
@@ -306,8 +353,9 @@ pub struct FilmModel {
     /// Slope of log exposure above the highlight knee (1 = unchanged).
     highlight_slope: f32,
     interimage: f32,
-    analytical: [Lut; 3],
-    dyes: [[f32; 3]; 3],
+    engine: Engine,
+    /// Per-layer spread from the datasheet MTF (sigma px, k, wide sigma px).
+    spread: Option<[(f32, f32, f32); 3]>,
     /// Per channel (offset, scale) applied to integral density by the scanner.
     balance: [(f32, f32); 3],
     t_white: f32,
@@ -331,42 +379,100 @@ pub struct FilmModel {
 const LOG_E_MIN: f64 = -4.0;
 const LOG_E_MAX: f64 = 2.0;
 
+/// How developed film is computed from per-layer log exposure.
+enum Engine {
+    /// Analytical density per layer, then the dye cross-talk matrix; the
+    /// state is the integral (scanner) density itself.
+    Matrix { analytical: [Lut; 3], dyes: [[f32; 3]; 3] },
+    /// Datasheet-derived: the state is dye amounts (reversal) or Status M
+    /// density (negative); [`spectral::Core::view`] turns it into colour.
+    Spectral { develop: [Lut; 3], core: std::sync::Arc<spectral::Core> },
+}
+
+impl Engine {
+    /// Developed state for per-layer log exposures. Grain is added to this.
+    fn develop(&self, log_e: [f32; 3]) -> [f32; 3] {
+        match self {
+            Self::Matrix { analytical, dyes: d } => {
+                let a = [0, 1, 2].map(|i| analytical[i].eval(log_e[i]));
+                [0, 1, 2].map(|i| d[i][0] * a[0] + d[i][1] * a[1] + d[i][2] * a[2])
+            }
+            Self::Spectral { develop, .. } => [0, 1, 2].map(|i| develop[i].eval(log_e[i])),
+        }
+    }
+
+    /// Scanner-channel density (R, G, B) of a developed state.
+    fn finish(&self, s: [f32; 3]) -> [f32; 3] {
+        match self {
+            Self::Matrix { .. } => s,
+            Self::Spectral { core, .. } => core.view(s).map(|v| -v.max(1e-6).log10()),
+        }
+    }
+}
+
 impl FilmModel {
     pub fn new(p: &FilmPreset, params: &FilmParams) -> Result<Self> {
-        let c = &p.curves;
-        let integral = |ch: usize, x: f64| match ch {
-            0 => interp(&c.log_exposure_r, &c.density_r, x),
-            1 => interp(&c.log_exposure_g, &c.density_g, x),
-            _ => interp(&c.log_exposure_b, &c.density_b, x),
+        let ev = params.exposure_ev * 2f64.log10();
+        let mut output = params.output;
+        let mut spread = None;
+        let (engine, to_layers, grey_log_e, log_offset) = if let Some(process) = p.process {
+            let ds = p.datasheet.as_ref().context("a spectral preset needs [datasheet]")?;
+            let log_h_ref = p.exposure.log_h_ref.context("a spectral preset needs exposure.log_h_ref")?;
+            let core = spectral::Core::get(process, ds, p.print.as_ref(), log_h_ref)?;
+            let develop = [0, 1, 2].map(|ch| Lut::from_fn(LOG_E_MIN, LOG_E_MAX, |x| core.develop.eval(ch, x)));
+            if process == Process::Negative {
+                // A print is looked at, not projected.
+                output = OutputMode::Scan;
+            }
+            // Film sharpness is a size on the film: convert with this camera's pitch.
+            let px = sensor_pitch_um(params) * params.pixel_scale.max(0.1);
+            spread = core.spread.map(|s| s.map(|l| ((l.sigma_um / px) as f32, l.k as f32, (l.wide_um / px) as f32)));
+            // The grey card lands on the datasheet's reference exposure.
+            let offset = log_h_ref - p.exposure.grey_linear.log10() + ev;
+            let to_layers = core.to_layers;
+            (Engine::Spectral { develop, core }, to_layers, log_h_ref, offset)
+        } else {
+            let c = p.curves.as_ref().context("preset needs [curves]")?;
+            let dyes = p.dyes.as_ref().context("preset needs [dyes]")?;
+            let integral = |ch: usize, x: f64| match ch {
+                0 => interp(&c.log_exposure_r, &c.density_r, x),
+                1 => interp(&c.log_exposure_g, &c.density_g, x),
+                _ => interp(&c.log_exposure_b, &c.density_b, x),
+            };
+
+            // Analytical dye curves: a(logE) = A^-1 * D_integral(logE) for neutrals.
+            let a_inv = color::inverse(&dyes.matrix).context("dye matrix is singular")?;
+            let analytical = [0, 1, 2].map(|dye| {
+                Lut::from_fn(LOG_E_MIN, LOG_E_MAX, |x| {
+                    let d = [integral(0, x), integral(1, x), integral(2, x)];
+                    color::mul_vec(&a_inv, &d)[dye]
+                })
+            });
+
+            // Exposure: grey_linear lands where green reaches grey_density.
+            let grey_density = p.exposure.grey_density.context("preset needs exposure.grey_density")?;
+            let ge = &c.log_exposure_g;
+            let grey_log_e = find_log_e(|x| integral(1, x), grey_density, ge[0], ge[ge.len() - 1]);
+            let log_offset = grey_log_e - p.exposure.grey_linear.log10() + ev;
+
+            // Working (ProPhoto D50) -> linear Rec.2020 (D65) -> layer exposures.
+            let to_rec2020 = color::mul(
+                &color::XYZ_D65_TO_REC2020,
+                &color::mul(
+                    &color::bradford(color::XY_D50, color::XY_D65),
+                    &color::inverse(&color::XYZ_D50_TO_PROPHOTO).expect("invertible"),
+                ),
+            );
+            let sensitivity = p.look.sensitivity.context("preset needs look.sensitivity")?;
+            let to_layers = color::mul(&sensitivity, &to_rec2020);
+            let engine = Engine::Matrix { analytical, dyes: dyes.matrix.map(|r| r.map(|v| v as f32)) };
+            (engine, to_layers, grey_log_e, log_offset)
         };
 
-        // Analytical dye curves: a(logE) = A^-1 * D_integral(logE) for neutrals.
-        let a_inv = color::inverse(&p.dyes.matrix).context("dye matrix is singular")?;
-        let analytical = [0, 1, 2].map(|dye| {
-            Lut::from_fn(LOG_E_MIN, LOG_E_MAX, |x| {
-                let d = [integral(0, x), integral(1, x), integral(2, x)];
-                color::mul_vec(&a_inv, &d)[dye]
-            })
-        });
-
-        // Exposure: grey_linear lands where green reaches grey_density.
-        let ge = &c.log_exposure_g;
-        let grey_log_e = find_log_e(|x| integral(1, x), p.exposure.grey_density, ge[0], ge[ge.len() - 1]);
-        let log_offset = grey_log_e - p.exposure.grey_linear.log10() + params.exposure_ev * 2f64.log10();
-
-        // Working (ProPhoto D50) -> linear Rec.2020 (D65) -> layer exposures.
-        let to_rec2020 = color::mul(
-            &color::XYZ_D65_TO_REC2020,
-            &color::mul(
-                &color::bradford(color::XY_D50, color::XY_D65),
-                &color::inverse(&color::XYZ_D50_TO_PROPHOTO).expect("invertible"),
-            ),
-        );
-        let to_layers = color::mul(&p.look.sensitivity, &to_rec2020);
-
         // Scanner: base (Dmin) is white; grey-balance channels at the grey density.
-        let dmin = [0, 1, 2].map(|ch| integral(ch, LOG_E_MAX));
-        let d_grey = [0, 1, 2].map(|ch| integral(ch, grey_log_e));
+        let read = |x: f64| engine.finish(engine.develop([x as f32; 3])).map(|v| v as f64);
+        let dmin = read(LOG_E_MAX);
+        let d_grey = read(grey_log_e);
         let balance = [0, 1, 2].map(|ch| {
             let full = (d_grey[1] - dmin[1]) / (d_grey[ch] - dmin[ch]);
             let scale = 1.0 + p.scan.neutral_balance * (full - 1.0);
@@ -385,7 +491,7 @@ impl FilmModel {
         // Selwyn's law (std x sqrt(area) constant) over whichever is larger,
         // the pixel or the grain's own correlation length: finer pixels show
         // more noise per pixel until they resolve the clumps themselves.
-        let pixel_um = if params.sensor_pixel_um.is_finite() && params.sensor_pixel_um > 0.0 { params.sensor_pixel_um } else { M9_PIXEL_UM };
+        let pixel_um = sensor_pitch_um(params);
         let k = M9_PIXEL_UM / pixel_um;
         let blur_m9 = p.grain.blur_px * params.grain_size.clamp(0.25, 6.0);
         let full_blur = blur_m9 * k;
@@ -409,8 +515,8 @@ impl FilmModel {
             // scene range before white); +1 expands it to blow out sooner.
             highlight_slope: 2f32.powf(params.highlights.clamp(-1.0, 1.0) as f32 * 1.3),
             interimage: p.look.interimage as f32,
-            analytical,
-            dyes: p.dyes.matrix.map(|r| r.map(|v| v as f32)),
+            engine,
+            spread,
             balance,
             t_white: 10f32.powf(-dmin[1] as f32),
             t_black: 10f32.powf(-p.scan.black_density as f32),
@@ -421,7 +527,7 @@ impl FilmModel {
             hal_sigma: (p.halation.radius_px.max(0.5) * k / f) as f32,
             hal_threshold: (10f64.powf(grey_log_e - log_offset) * 2f64.powf(p.halation.threshold_stops)) as f32,
             hal_tint: p.halation.tint.map(|v| v as f32),
-            output: params.output,
+            output,
             proj_flare: p.projection.flare.max(0.0) as f32,
             proj_wb: p.projection.white_balance.map(|v| v as f32),
             proj_falloff: p.projection.falloff_stops.max(0.0) as f32,
@@ -432,7 +538,7 @@ impl FilmModel {
 
     /// Integral (scanner-channel) densities for one working-space pixel.
     pub fn densities(&self, rgb: [f32; 3]) -> [f32; 3] {
-        self.densities_from_exposure(self.layer_exposure(rgb))
+        self.engine.finish(self.state_from_exposure(self.layer_exposure(rgb)))
     }
 
     /// Linear exposure of the red-, green- and blue-sensitive layers.
@@ -441,7 +547,8 @@ impl FilmModel {
         [0, 1, 2].map(|i| m[i][0] * rgb[0] + m[i][1] * rgb[1] + m[i][2] * rgb[2])
     }
 
-    fn densities_from_exposure(&self, exposure: [f32; 3]) -> [f32; 3] {
+    /// Developed film (before grain) for linear layer exposures.
+    fn state_from_exposure(&self, exposure: [f32; 3]) -> [f32; 3] {
         let log_e = [0, 1, 2].map(|i| {
             let e = exposure[i];
             // Flare pedestal, then a floor well below the film's maximum
@@ -454,9 +561,7 @@ impl FilmModel {
         });
         let mean = (log_e[0] + log_e[1] + log_e[2]) / 3.0;
         // Interimage push, limited so one starved layer can't swing the others.
-        let a = [0, 1, 2].map(|i| self.analytical[i].eval(log_e[i] + self.interimage * (log_e[i] - mean).clamp(-1.0, 1.0)));
-        let d = &self.dyes;
-        [0, 1, 2].map(|i| d[i][0] * a[0] + d[i][1] * a[1] + d[i][2] * a[2])
+        self.engine.develop([0, 1, 2].map(|i| log_e[i] + self.interimage * (log_e[i] - mean).clamp(-1.0, 1.0)))
     }
 
     /// Scanner: integral density -> display-linear value in [0, 1].
@@ -496,13 +601,19 @@ impl FilmModel {
     /// As [`apply`], for an image that is a crop of a larger frame.
     pub fn apply_framed(&self, img: &LinearImage, seed: u64, frame: GrainFrame) -> LinearImage {
         let mut exposure: Vec<[f32; 3]> = img.pixels.par_iter().map(|&p| self.layer_exposure(p)).collect();
+        if let Some(spread) = &self.spread {
+            apply_spread(&mut exposure, img.width, img.height, spread);
+        }
         if self.hal_gain > 0.0 {
             self.add_halation(&mut exposure, img.width, img.height);
         }
-        let mut dens: Vec<[f32; 3]> = exposure.par_iter().map(|&e| self.densities_from_exposure(e)).collect();
+        let mut dens: Vec<[f32; 3]> = exposure.par_iter().map(|&e| self.state_from_exposure(e)).collect();
         drop(exposure);
         if self.grain_sigma > 0.0 {
             add_grain(&mut dens, img.width, img.height, self, seed, frame);
+        }
+        if matches!(self.engine, Engine::Spectral { .. }) {
+            dens.par_iter_mut().for_each(|d| *d = self.engine.finish(*d));
         }
         let pixels = match self.output {
             OutputMode::Scan => dens.par_iter().map(|&d| self.scan(d)).collect(),
@@ -570,8 +681,71 @@ impl FilmModel {
     }
 }
 
+/// Film sharpness: blur each layer's exposure by its fitted spread, with the
+/// adjacency term `(1 + k) * G(sigma) - k * G(wide)` where the MTF rises
+/// above 100%.
+fn apply_spread(exposure: &mut [[f32; 3]], w: usize, h: usize, spread: &[(f32, f32, f32); 3]) {
+    for (c, &(sigma, k, wide)) in spread.iter().enumerate() {
+        let plane: Vec<f32> = exposure.par_iter().map(|e| e[c]).collect();
+        let mut sharp = plane.clone();
+        blur(&mut sharp, w, h, sigma);
+        if k > 0.0 {
+            let broad = smooth_blur(&plane, w, h, wide);
+            sharp.par_iter_mut().zip(broad.par_iter()).for_each(|(s, b)| *s = (1.0 + k) * *s - k * b);
+        }
+        exposure.par_iter_mut().zip(sharp.par_iter()).for_each(|(e, v)| e[c] = v.max(0.0));
+    }
+}
+
+/// Gaussian blur for wide sigmas, computed on a grid reduced by about
+/// sigma / 3 and sampled back bilinearly (the result is smooth anyway).
+fn smooth_blur(plane: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
+    let d = ((sigma / 3.0).floor() as usize).max(1);
+    if d == 1 {
+        let mut out = plane.to_vec();
+        blur(&mut out, w, h, sigma);
+        return out;
+    }
+    let (sw, sh) = (w.div_ceil(d), h.div_ceil(d));
+    let mut small: Vec<f32> = (0..sw * sh)
+        .into_par_iter()
+        .map(|i| {
+            let (sx, sy) = (i % sw, i / sw);
+            let (mut sum, mut n) = (0.0f32, 0u32);
+            for y in sy * d..((sy + 1) * d).min(h) {
+                for x in sx * d..((sx + 1) * d).min(w) {
+                    sum += plane[y * w + x];
+                    n += 1;
+                }
+            }
+            sum / n.max(1) as f32
+        })
+        .collect();
+    blur(&mut small, sw, sh, sigma / d as f32);
+    let mut out = vec![0f32; w * h];
+    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        let fy = ((y as f32 + 0.5) / d as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+        let (y0, ty) = (fy.floor() as usize, fy.fract());
+        let y1 = (y0 + 1).min(sh - 1);
+        for (x, o) in row.iter_mut().enumerate() {
+            let fx = ((x as f32 + 0.5) / d as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+            let (x0, tx) = (fx.floor() as usize, fx.fract());
+            let x1 = (x0 + 1).min(sw - 1);
+            let top = small[y0 * sw + x0] * (1.0 - tx) + small[y0 * sw + x1] * tx;
+            let bottom = small[y1 * sw + x0] * (1.0 - tx) + small[y1 * sw + x1] * tx;
+            *o = top * (1.0 - ty) + bottom * ty;
+        }
+    });
+    out
+}
+
 /// Halation exposure gain at strength 1.0.
 const HALATION_GAIN: f64 = 0.8;
+
+/// The camera's pixel pitch, falling back to the M9 for nonsense values.
+fn sensor_pitch_um(params: &FilmParams) -> f64 {
+    if params.sensor_pixel_um.is_finite() && params.sensor_pixel_um > 0.0 { params.sensor_pixel_um } else { M9_PIXEL_UM }
+}
 
 /// Solve f(x) = target for a monotonically decreasing f on [lo, hi].
 fn find_log_e(f: impl Fn(f64) -> f64, target: f64, mut lo: f64, mut hi: f64) -> f64 {
@@ -729,6 +903,24 @@ mod tests {
     }
 
     #[test]
+    fn datasheet_sharpness_keeps_its_physical_size_on_other_sensors() {
+        let pitch = 36_000.0 / 8192.0;
+        let k = (M9_PIXEL_UM / pitch) as f32;
+        for id in ["ektachrome-e100", "portra400"] {
+            let p = FilmPreset::builtin(id).unwrap();
+            let m9 = FilmModel::new(&p, &FilmParams::default()).unwrap();
+            let fine = FilmModel::new(&p, &FilmParams { sensor_pixel_um: pitch, ..Default::default() }).unwrap();
+            let (a, b) = (m9.spread.unwrap(), fine.spread.unwrap());
+            for c in 0..3 {
+                assert!((b[c].0 / a[c].0 - k).abs() < 1e-4 && (b[c].2 / a[c].2 - k).abs() < 1e-4, "{id}: {a:?} vs {b:?}");
+                assert_eq!(a[c].1, b[c].1);
+            }
+            assert!((fine.hal_sigma / m9.hal_sigma - k).abs() < 1e-4);
+            assert!((fine.grain_blur / m9.grain_blur - k).abs() < 1e-4);
+        }
+    }
+
+    #[test]
     fn grain_looks_the_same_size_on_a_finer_sensor() {
         // Render a flat grey on the M9 and on a sensor with half the pitch,
         // then compare grain over the same physical area: the fine render
@@ -770,7 +962,7 @@ mod tests {
         // must equal the measured curves at that log exposure.
         let grey = p.exposure.grey_linear as f32;
         let d = m.densities([grey, grey, grey]);
-        assert!((d[1] - p.exposure.grey_density as f32).abs() < 0.03, "{d:?}");
+        assert!((d[1] - p.exposure.grey_density.unwrap() as f32).abs() < 0.03, "{d:?}");
     }
 
     #[test]
