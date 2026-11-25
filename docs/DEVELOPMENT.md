@@ -33,8 +33,9 @@ How Remjet is put together, for anyone reading or extending the code.
      crop renders identical grain to the full frame.
    - **Scanner**: grey balance at the mid-grey density, transmittance with white at the film base and
      a black-point density, scanner gamma and colour balance → display-linear sRGB.
-5. **Output** (`output.rs`, `exif.rs`): sRGB encode, orientation, JPEG (4:4:4, optimised tables) with
-   a minimal EXIF block built from the DNG's metadata.
+5. **Output** (`output.rs`, `exif.rs`, `icc.rs`): sRGB encode, orientation, JPEG (4:4:4, optimised
+   tables) with a minimal EXIF block built from the DNG's metadata and an embedded sRGB ICC profile
+   (generated in code, ICC v2.1).
 
 ## The app
 

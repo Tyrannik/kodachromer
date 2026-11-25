@@ -1,4 +1,7 @@
 //! Output: working space -> display-referred sRGB, orientation, JPEG.
+//!
+//! Every JPEG is tagged with an sRGB ICC profile (see `icc.rs`), so
+//! colour-managed viewers show it as intended on wide-gamut displays.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -59,6 +62,14 @@ pub fn write_jpeg(img: &RgbImage, path: &Path, quality: u8) -> Result<()> {
 
 /// Encode a JPEG, optionally carrying camera metadata from the source DNG.
 pub fn write_jpeg_with_exif(img: &RgbImage, path: &Path, quality: u8, exif: Option<&crate::exif::ExifInfo>) -> Result<()> {
+    let jpeg = encode_jpeg(img, quality, exif).with_context(|| format!("encoding {}", path.display()))?;
+    let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
+    let mut w = BufWriter::new(file);
+    std::io::Write::write_all(&mut w, &jpeg).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Encode a JPEG in memory: EXIF (APP1, if given) then the sRGB ICC profile (APP2).
+pub fn encode_jpeg(img: &RgbImage, quality: u8, exif: Option<&crate::exif::ExifInfo>) -> Result<Vec<u8>> {
     // Full-resolution colour (4:4:4) and optimised Huffman tables: noticeably
     // cleaner fine colour detail and grain than the default 4:2:0.
     let mut jpeg = Vec::new();
@@ -70,9 +81,80 @@ pub fn write_jpeg_with_exif(img: &RgbImage, path: &Path, quality: u8, exif: Opti
         app1.extend(crate::exif::build_tiff(info, img.width(), img.height()));
         enc.add_app_segment(1, app1).context("adding EXIF")?;
     }
+    enc.add_icc_profile(crate::icc::srgb_profile()).context("adding ICC profile")?;
     let (w, h) = (u16::try_from(img.width()).context("image too wide for JPEG")?, u16::try_from(img.height()).context("image too tall for JPEG")?);
-    enc.encode(img.as_raw(), w, h, jpeg_encoder::ColorType::Rgb).with_context(|| format!("encoding {}", path.display()))?;
-    let file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
-    let mut w = BufWriter::new(file);
-    std::io::Write::write_all(&mut w, &jpeg).with_context(|| format!("writing {}", path.display()))
+    enc.encode(img.as_raw(), w, h, jpeg_encoder::ColorType::Rgb)?;
+    Ok(jpeg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exif::ExifInfo;
+
+    /// (marker, payload) of each segment before the scan data.
+    fn segments(jpeg: &[u8]) -> Vec<(u8, &[u8])> {
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8]);
+        let mut out = Vec::new();
+        let mut i = 2;
+        while jpeg[i] == 0xFF && jpeg[i + 1] != 0xDA {
+            let len = u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]) as usize;
+            out.push((jpeg[i + 1], &jpeg[i + 4..i + 2 + len]));
+            i += 2 + len;
+        }
+        out
+    }
+
+    fn sample() -> RgbImage {
+        RgbImage::from_fn(48, 32, |x, y| image::Rgb([(x * 5) as u8, (y * 7) as u8, 128]))
+    }
+
+    #[test]
+    fn jpeg_carries_exif_and_srgb_profile() {
+        let info = ExifInfo { make: Some("Leica Camera AG".into()), model: Some("M9 Digital Camera".into()), iso: Some(160), ..Default::default() };
+        let jpeg = encode_jpeg(&sample(), 92, Some(&info)).unwrap();
+        let segs = segments(&jpeg);
+        let app1: Vec<_> = segs.iter().filter(|(m, _)| *m == 0xE1).collect();
+        assert_eq!(app1.len(), 1);
+        assert_eq!(&app1[0].1[..6], b"Exif\0\0");
+        assert_eq!(&app1[0].1[6..], crate::exif::build_tiff(&info, 48, 32).as_slice());
+        let icc: Vec<_> = segs.iter().filter(|(m, d)| *m == 0xE2 && d.starts_with(b"ICC_PROFILE\0")).collect();
+        assert_eq!(icc.len(), 1);
+        assert_eq!(&icc[0].1[12..14], &[1, 1], "single chunk, 1 of 1");
+        assert_eq!(&icc[0].1[14..], crate::icc::srgb_profile());
+        // EXIF comes before the profile.
+        let pos = |m: u8| segs.iter().position(|s| s.0 == m).unwrap();
+        assert!(pos(0xE1) < pos(0xE2));
+    }
+
+    #[test]
+    fn jpeg_without_exif_still_has_profile() {
+        let jpeg = encode_jpeg(&sample(), 92, None).unwrap();
+        let segs = segments(&jpeg);
+        assert!(!segs.iter().any(|(m, _)| *m == 0xE1));
+        assert!(segs.iter().any(|(m, d)| *m == 0xE2 && d.starts_with(b"ICC_PROFILE\0")));
+    }
+
+    #[test]
+    fn decoders_see_the_profile_and_pixels() {
+        use image::ImageDecoder;
+        let jpeg = encode_jpeg(&sample(), 95, Some(&ExifInfo::default())).unwrap();
+        let mut dec = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(&jpeg)).unwrap();
+        assert_eq!(dec.icc_profile().unwrap().as_deref(), Some(crate::icc::srgb_profile()));
+        assert!(dec.exif_metadata().unwrap().is_some());
+        let img = image::load_from_memory(&jpeg).unwrap().to_rgb8();
+        assert_eq!(img.dimensions(), (48, 32));
+        let (a, b) = (img.get_pixel(20, 10), sample().get_pixel(20, 10).to_owned());
+        assert!(a.0.iter().zip(b.0).all(|(x, y)| x.abs_diff(y) <= 4), "{a:?} vs {b:?}");
+    }
+
+    #[test]
+    fn write_jpeg_writes_the_same_bytes() {
+        let dir = std::env::temp_dir().join(format!("remjet-output-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out.jpg");
+        write_jpeg(&sample(), &path, 90).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), encode_jpeg(&sample(), 90, None).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
