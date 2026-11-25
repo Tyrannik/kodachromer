@@ -16,6 +16,10 @@
   - Both use each layer's published MTF (including Portra's adjacency boost) for film sharpness.
     Like grain and halation, it is a size on the film, so it scales with each camera's pixel pitch.
 - For negatives, the Output menu shows the print paper instead of Scanned / Projected slide.
+- **Warning for files that aren't from a Leica M9.** The library flags them ("⚠ not M9", with a
+  count at the top), and the preview shows a banner naming the camera. They still open and develop
+  as before. The M9-P, M9 Titanium and M-E count as M9s; Monochrom bodies don't.
+- `remjet-cli info`, `render` and `export` print the same warning on stderr for each such file.
 
 ## 0.1.0-alpha.4
 
