@@ -23,27 +23,40 @@ pub struct RawInfo {
     pub crop: Option<(usize, usize, usize, usize)>,
     pub has_linearization_table: bool,
     pub is_float: bool,
+    pub sensor: crate::sensor::SensorGeometry,
+}
+
+/// File extensions of raw formats Remjet opens (all decoded by rawler).
+/// Bayer and X-Trans sensors work; Sigma Foveon (X3F) and monochrome bodies
+/// are listed by rawler but are rejected when developed.
+pub const RAW_EXTENSIONS: &[&str] = &[
+    "dng", "3fr", "arw", "cr2", "cr3", "crw", "dcr", "erf", "fff", "iiq", "kdc", "mef", "mos", "mrw", "nef", "nrw",
+    "orf", "ori", "pef", "raf", "rw2", "rwl", "srw",
+];
+
+/// True if `path` has a raw file extension Remjet can open.
+pub fn is_raw_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| RAW_EXTENSIONS.iter().any(|r| r.eq_ignore_ascii_case(e)))
 }
 
 /// Decode a raw file fully (rawler applies any linearisation table here).
+/// Also picks up the EXIF tags [`crate::sensor`] needs for the pixel pitch.
 pub fn load(path: &Path) -> Result<RawImage> {
-    rawler::decode_file(path).with_context(|| format!("decoding {}", path.display()))
+    let mut image = rawler::decode_file(path).with_context(|| format!("decoding {}", path.display()))?;
+    crate::sensor::stash_exif_hints(path, &mut image);
+    Ok(image)
 }
 
-/// True for the Leica M9 family (M9, M9-P, M9 Titanium) and the M-E (Typ 220),
-/// which shares the M9's sensor and colour. Monochrom bodies don't count:
-/// they have no colour filter array.
+/// True for the colour bodies of the M9 family ([`crate::sensor::is_m9_family`]:
+/// M9, M9-P, M9 Titanium, M-E). The M Monochrom shares the sensor but has no
+/// colour filter array, so it doesn't count here.
 ///
 /// Accepts both the raw DNG tags ("Leica Camera AG" / "M9 Digital Camera")
 /// and rawler's cleaned names ("Leica" / "M9").
 pub fn is_leica_m9(make: &str, model: &str) -> bool {
-    if !make.to_ascii_lowercase().contains("leica") {
-        return false;
-    }
-    let model = model.trim().to_ascii_lowercase();
-    let model = model.strip_prefix("leica ").unwrap_or(&model);
-    let model = model.strip_suffix(" digital camera").unwrap_or(model).trim();
-    matches!(model, "m9" | "m9-p" | "m9 titanium" | "m-e" | "m-e typ 220" | "m-e (typ 220)")
+    crate::sensor::is_m9_family(make, model) && !model.to_ascii_lowercase().contains("monochrom")
 }
 
 /// A user-facing warning when a file isn't from a Leica M9, or `None` if it is.
@@ -59,7 +72,7 @@ pub fn camera_warning(make: &str, model: &str) -> Option<String> {
         _ => format!("{make} {model}").trim().to_string(),
     };
     Some(format!(
-        "Not a Leica M9 file ({camera}). Remjet's colour and film looks are tuned for the M9 sensor, so results may be off."
+        "Not a Leica M9 file ({camera}). Remjet's film looks were tuned on M9 files: grain and halation are scaled to this camera, but colours may differ."
     ))
 }
 
@@ -93,12 +106,23 @@ pub fn info(image: &RawImage) -> RawInfo {
         crop: image.crop_area.map(|r| (r.p.x, r.p.y, r.d.w, r.d.h)),
         has_linearization_table: image.dng_tags.contains_key(&TAG_LINEARIZATION_TABLE),
         is_float: matches!(image.data, RawImageData::Float(_)),
+        sensor: crate::sensor::geometry(image),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_extensions() {
+        for name in ["a.dng", "a.DNG", "b.CR3", "c.nef", "d.RAF", "e.arw", "f.rw2"] {
+            assert!(is_raw_file(Path::new(name)), "{name}");
+        }
+        for name in ["a.jpg", "a.tif", "a.json", "dng", "a"] {
+            assert!(!is_raw_file(Path::new(name)), "{name}");
+        }
+    }
 
     #[test]
     fn m9_names_are_accepted() {
@@ -158,6 +182,7 @@ mod tests {
             crop: None,
             has_linearization_table: false,
             is_float: false,
+            sensor: crate::sensor::geometry_from_hints(&Default::default(), 5212, 3472),
         };
         assert_eq!(info("Leica", "M9").camera_warning(), None);
         assert!(info("Nikon", "Z 6").camera_warning().is_some());

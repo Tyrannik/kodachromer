@@ -15,7 +15,10 @@ Notable components:
 
 Film data: the Kodachrome 64 characteristic and spectral dye-density curves in
 presets/kodachrome64.toml were digitised from Kodak publication E-55 (06/2009) for emulation.
-Kodachrome and Kodak are trademarks of Eastman Kodak Company; this project is not affiliated
+The Ektachrome E100 data in presets/ektachrome-e100.toml were digitised from Kodak publication
+E-4000, and the Portra 400 and Endura Premier paper data in presets/portra400.toml from Kodak
+publications E-4050 and E-4070. Colorimetric tables in crates/remjet-core/src/cie.rs are from
+CIE 015:2018 and ISO 5-3:1995. Kodachrome, Ektachrome, Portra, Endura and Kodak are trademarks of Eastman Kodak Company; this project is not affiliated
 with or endorsed by Kodak or Leica.
 
 ## Crates (263)

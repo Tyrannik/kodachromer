@@ -2,10 +2,36 @@
 
 ## Unreleased
 
+- **Two new films: Ektachrome E100 and Portra 400.** Each is its own model built from its Kodak
+  datasheet, not a re-tuned Kodachrome:
+  - A new *spectral* engine fits each film's layer sensitivities from the published spectral
+    sensitivity curves, inverts the Status A or Status M characteristic curves through the
+    published dye spectra, and computes the colour you see from the dyes' spectra under 5000 K
+    light (CIE 1931 observer).
+  - **Ektachrome E100** (E-4000) is a slide film with its own E-6 dyes, scanned or projected like
+    Kodachrome, with its published rms granularity of 8.
+  - **Portra 400** (E-4050) is a colour negative, shown as an optical print on **Endura Premier**
+    paper (E-4070): the negative's printing densities, computed from its measured spectra and the
+    paper's sensitivity, expose the paper through its own curves and dyes.
+  - Both use each layer's published MTF (including Portra's adjacency boost) for film sharpness.
+    Like grain and halation, it is a size on the film, so it scales with each camera's pixel pitch.
+- For negatives, the Output menu shows the print paper instead of Scanned / Projected slide.
 - **Warning for files that aren't from a Leica M9.** The library flags them ("⚠ not M9", with a
-  count at the top), and the preview shows a banner naming the camera. They still open and export
+  count at the top), and the preview shows a banner naming the camera. They still open and develop
   as before. The M9-P, M9 Titanium and M-E count as M9s; Monochrom bodies don't.
 - `remjet-cli info`, `render` and `export` print the same warning on stderr for each such file.
+
+## 0.1.0-alpha.4
+
+- **Film looks scale to each camera's sensor.** Grain, grain clump size and halation are physical
+  sizes on the film, so they are now converted to pixels with each file's own pixel pitch instead of
+  the M9's. The pitch comes from the crop factor (35 mm-equivalent focal length) or the EXIF
+  focal-plane resolution, and falls back to full frame. Leica M9-family files render exactly as before.
+- **More raw files open:** the app and CLI list all raw formats rawler reads (CR2, CR3, NEF, ARW,
+  RAF, RW2, ORF, PEF and others), not only DNG.
+- **Fujifilm X-Trans** sensors and **linear DNGs** now develop.
+- Files without a D65 colour matrix use their closest daylight matrix instead of failing.
+- `remjet-cli info` prints each file's sensor pitch and where it came from.
 
 ## 0.1.0-alpha.3
 
