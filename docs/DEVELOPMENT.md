@@ -9,7 +9,7 @@ How Remjet is put together, for anyone reading or extending the code.
 | `crates/remjet-core` | Everything that touches pixels: DNG decoding, colour science, the film model, grain, halation, edits/sidecars, export, EXIF. No UI. |
 | `crates/remjet` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
 | `crates/remjet-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
-| `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml`, `portra400.toml`, `ektar100.toml`, `gold200.toml`, `ultramax400.toml` and `trix400.toml` (spectral model; Tri-X is `process = "monochrome"`). |
+| `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml`, `portra400.toml`, `ektar100.toml`, `gold200.toml`, `ultramax400.toml`, `portra800.toml` and `trix400.toml` (spectral model; Tri-X is `process = "monochrome"`). |
 | `assets/` | Icon, and the Barlow fonts the app embeds (`assets/fonts`, SIL OFL 1.1). |
 
 ## Image pipeline
@@ -66,7 +66,7 @@ How Remjet is put together, for anyone reading or extending the code.
 
 ## Spectral film model
 
-Ektachrome E100, the colour negatives (Portra 400, Ektar 100, Gold 200, Ultramax 400) and Tri-X 400 use `spectral.rs` instead of the Kodachrome matrix model. A preset
+Ektachrome E100, the colour negatives (Portra 400, Portra 800, Ektar 100, Gold 200, Ultramax 400) and Tri-X 400 use `spectral.rs` instead of the Kodachrome matrix model. A preset
 with `process = "reversal"`, `"negative"` or `"monochrome"` carries its datasheet as `[datasheet]` (and, for a
 negative, its paper as `[print]`); everything else is computed from those spectra when the film is
 first used, and cached:
@@ -137,7 +137,9 @@ and the print grey aim are not in the datasheets; both are marked as estimates i
   characteristic curve (diffuse visual, D-76, 8 min large tank), spectral sensitivity, MTF,
   diffuse rms granularity.
 - Kodak publication **E-4040**, *KODAK PROFESSIONAL PORTRA 800 Film* (2025): Status M curves at
-  EI 800 normal, EI 1600 (push 1) and EI 3200 (push 2), used to fit the colour negative push model.
+  EI 800 normal, EI 1600 (push 1) and EI 3200 (push 2) (Portra 800's own developments, and the fit
+  for the other colour negatives' push model), spectral sensitivity, spectral density of a
+  mid-scale neutral and of minimum density, MTF.
   Other push sources checked: E-116 (Ektapress PJ400/PJ800 push 1 and 2 curves), E-147 (Ektachrome
   P1600 push 2, Status A), E-28 (E200 push times only) and E-55/E-88 (Kodachrome 200 push ratings;
   Kodak does not recommend pushing Kodachrome 64).
@@ -160,7 +162,7 @@ the orientation maths used by zoom.
 
 ## Ideas / roadmap
 
-- More films as data presets (Kodachrome 25, Portra 160, T-Max 100/400, Portra 800 with its measured push curves); the catalogue of
+- More films as data presets (Kodachrome 25, Portra 160, T-Max 100/400); the catalogue of
   Kodak datasheets is a good starting point.
 - Highlight reconstruction for clipped raw channels.
 - Lens corrections (M9 vignetting/colour shading), crop and straighten.

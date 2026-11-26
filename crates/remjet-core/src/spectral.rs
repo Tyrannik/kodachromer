@@ -1081,7 +1081,7 @@ mod datasheet_tests {
     #[test]
     #[ignore]
     fn spectral_report() {
-        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400"] {
+        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "portra800"] {
             let (p, c) = core(id);
             println!("== {id}");
             println!("to_layers {:?}", c.to_layers.map(|r| r.map(|v| (v * 1000.0).round() / 1000.0)));
@@ -1141,7 +1141,7 @@ mod datasheet_tests {
 
     #[test]
     fn sensitivity_fit_is_layer_dominant_and_white_balanced() {
-        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400"] {
+        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "portra800"] {
             let (_, c) = core(id);
             for (i, row) in c.to_layers.iter().enumerate() {
                 assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-9);
@@ -1188,7 +1188,7 @@ mod datasheet_tests {
     #[test]
     fn every_negative_scans_and_prints_its_grey_neutral() {
         use crate::film::OutputMode;
-        for id in ["portra400", "ektar100", "gold200", "ultramax400"] {
+        for id in ["portra400", "ektar100", "gold200", "ultramax400", "portra800"] {
             let (p, c) = core(id);
             let g = p.exposure.grey_linear as f32;
             let m = FilmModel::new(&p, &FilmParams { grain: 0.0, output: OutputMode::Print, ..Default::default() }).unwrap();
@@ -1206,7 +1206,7 @@ mod datasheet_tests {
 
     #[test]
     fn ramps_are_monotonic_from_black_to_white() {
-        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "trix400"] {
+        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "portra800", "trix400"] {
             let (p, _) = core(id);
             let m = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
             let g = p.exposure.grey_linear as f32;
@@ -1284,10 +1284,10 @@ mod datasheet_tests {
 
     #[test]
     fn every_push_and_pull_renders_with_grey_held_and_contrast_following_the_push() {
-        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "trix400"] {
+        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "portra800", "trix400"] {
             let p = FilmPreset::builtin(id).unwrap();
             let pushes = p.developments();
-            assert!(pushes.len() >= 3, "{id}: expected pull and push options, got {pushes:?}");
+            assert!(pushes.len() >= 2, "{id}: expected pull and push options, got {pushes:?}");
             let g = p.exposure.grey_linear as f32;
             // Contrast of the scan about grey (one stop either side), green.
             let look = |push: i32| {
@@ -1352,6 +1352,10 @@ mod datasheet_tests {
         assert_eq!(ds.developed(1).unwrap().curves, ds.curves);
         assert!(ds.developed(5).is_none());
         assert!(p.developments().iter().all(|d| !d.1.contains("modelled")));
+        // Portra 800's pushes are Kodak's measured curves too.
+        let p800 = FilmPreset::builtin("portra800").unwrap();
+        assert_eq!(p800.developments().iter().map(|d| d.0).collect::<Vec<_>>(), [1, 2]);
+        assert!(p800.developments().iter().all(|d| !d.1.contains("modelled")));
         let e100 = FilmPreset::builtin("ektachrome-e100").unwrap();
         assert!(e100.developments().iter().all(|d| d.1.ends_with("· modelled")));
         assert!(FilmPreset::builtin("kodachrome64").unwrap().developments().is_empty());
