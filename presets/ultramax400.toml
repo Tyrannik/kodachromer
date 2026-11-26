@@ -162,6 +162,31 @@ values = [
   0.275,
 ]
 
+
+# Push and pull. Kodak publishes no push curves for this film. These are
+# modelled on the measured Portra 800 (E-4040) Status M curves for push 1
+# and push 2 against normal development: each layer's curve gets steeper
+# about fog and moves left by the fitted amount (RMS error under 0.03 D).
+# The pull is push 1 reversed. Shown as "modelled" in the app.
+
+[[datasheet.development]]
+push = -1
+label = "Pull 1 (EI 200)"
+source = "modelled from Portra 800 (E-4040) push curves: push 1 reversed"
+model = { contrast = [0.823, 0.855, 0.847], shift = [-0.17, -0.12, -0.105] }
+
+[[datasheet.development]]
+push = 1
+label = "Push 1 (EI 800)"
+source = "modelled from Portra 800 (E-4040) push curves: EI 1600 vs EI 800"
+model = { contrast = [1.215, 1.17, 1.18], shift = [0.17, 0.12, 0.105] }
+
+[[datasheet.development]]
+push = 2
+label = "Push 2 (EI 1600)"
+source = "modelled from Portra 800 (E-4040) push curves: EI 3200 vs EI 800"
+model = { contrast = [1.325, 1.29, 1.255], shift = [0.18, 0.16, 0.15] }
+
 [print]
 name = "Endura Premier (E-4070)"
 densitometry = "status_a"

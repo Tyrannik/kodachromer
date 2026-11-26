@@ -215,6 +215,27 @@ impl FilmPreset {
         self.process == Some(Process::Negative)
     }
 
+    /// Push/pull developments this film's datasheet lists, besides normal
+    /// (0): (stops, label), sorted from most pulled to most pushed.
+    pub fn developments(&self) -> Vec<(i32, String)> {
+        let mut v: Vec<(i32, String)> = self
+            .datasheet
+            .iter()
+            .flat_map(|d| {
+                d.development.iter().map(|d| {
+                    let label = if d.model.is_some() { format!("{} · modelled", d.label) } else { d.label.clone() };
+                    (d.push, label)
+                })
+            })
+            .collect();
+        v.sort_by_key(|d| d.0);
+        v
+    }
+
+    pub fn supports_push(&self, push: i32) -> bool {
+        push == 0 || self.developments().iter().any(|d| d.0 == push)
+    }
+
     /// True for black-and-white films, which are always scanned.
     pub fn is_monochrome(&self) -> bool {
         self.process == Some(Process::Monochrome)
@@ -289,6 +310,9 @@ pub struct FilmParams {
     pub highlights: f64,
     /// Halation strength, 0 (off) .. 1 (strong).
     pub halation: f64,
+    /// Push (+) or pull (-) processing in stops, from the preset's
+    /// `[[datasheet.development]]` list. 0 = normal.
+    pub push: i32,
     /// Scanned or projected slide.
     pub output: OutputMode,
 }
@@ -305,6 +329,7 @@ impl Default for FilmParams {
             sensor_white: Some(1.0),
             highlights: 0.0,
             halation: 0.0,
+            push: 0,
             output: OutputMode::Scan,
         }
     }
@@ -486,7 +511,10 @@ impl FilmModel {
         let (engine, to_layers, grey_log_e, log_offset) = if let Some(process) = p.process {
             let ds = p.datasheet.as_ref().context("a spectral preset needs [datasheet]")?;
             let log_h_ref = p.exposure.log_h_ref.context("a spectral preset needs exposure.log_h_ref")?;
-            let core = spectral::Core::get(process, ds, p.print.as_ref(), log_h_ref)?;
+            let core = spectral::Core::get(process, ds, p.print.as_ref(), log_h_ref, params.push)?;
+            // A pushed film is rated faster: the grey card is underexposed by
+            // that many stops (and developed longer to make up for it).
+            let log_h_ref = log_h_ref - params.push as f64 * 2f64.log10();
             let develop = [0, 1, 2].map(|ch| Lut::from_fn(LOG_E_MIN, LOG_E_MAX, |x| core.develop.eval(ch, x)));
             // A negative is lab-scanned (the default) or printed; either is
             // looked at, not projected. A slide has no print.

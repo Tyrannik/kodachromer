@@ -221,6 +221,105 @@ pub struct Datasheet {
     pub negative_density: Option<NegativeDensity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtf: Option<Mtf>,
+    /// Push and pull processing the film supports (beyond normal, push 0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub development: Vec<Development>,
+    /// Curves the lab scanner is set up for (normal development), when
+    /// `curves` are a pushed or pulled development. Set at render time.
+    #[serde(skip)]
+    pub scan_reference: Option<RgbSeries>,
+}
+
+/// One push or pull process: the film is rated `push` stops faster (pull
+/// when negative) and developed to `curves` (measured, from a datasheet) or
+/// to curves derived from normal development by `model`. With neither the
+/// film is developed normally (the datasheet says its latitude covers it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Development {
+    pub push: i32,
+    /// Shown in the app, e.g. "Push 2 (EI 1600)".
+    pub label: String,
+    /// Where the data comes from, e.g. "F-4017: D-76, large tank, 10 min".
+    #[serde(default)]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curves: Option<RgbSeries>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<DevelopmentModel>,
+}
+
+/// A push or pull modelled from the film's normal curves, for films Kodak
+/// published no push curves for. Each channel's curve becomes
+/// `pivot + contrast * (D(log_h + shift) - pivot)`: steeper or flatter about
+/// `pivot`, and `shift` log exposure faster. Below the pivot the curve eases
+/// back to the film's minimum density, and the maximum is capped at the
+/// normal maximum less `max_density_drop`. Values are red,
+/// green, blue.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DevelopmentModel {
+    pub contrast: [f64; 3],
+    pub shift: [f64; 3],
+    /// Density held fixed. Defaults to each curve's minimum (a negative's fog).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pivot: Option<f64>,
+    /// How much lower the maximum density gets (a pushed slide's thinner
+    /// blacks). Without it a negative's density is not capped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_density_drop: Option<f64>,
+}
+
+impl DevelopmentModel {
+    fn apply(&self, curves: &RgbSeries) -> RgbSeries {
+        let [r, g, b] = [0, 1, 2].map(|ch| {
+            let c = curves.get()[ch];
+            let lo = c.values.iter().copied().fold(f64::MAX, f64::min);
+            let hi = c.values.iter().copied().fold(f64::MIN, f64::max);
+            let cap = self.max_density_drop.map_or(f64::MAX, |d| hi - d);
+            let pivot = self.pivot.unwrap_or(lo);
+            // Widen the grid by the shift so both ends still reach the
+            // normal curve's end densities (a pulled slide's base stays clear).
+            let s = self.shift[ch];
+            let extra = (s.abs() / c.step).ceil() as usize;
+            let start = if s > 0.0 { c.start - c.step * extra as f64 } else { c.start };
+            let values = (0..c.values.len() + extra)
+                .map(|k| {
+                    let x = start + c.step * k as f64;
+                    let d = c.at(x + self.shift[ch]);
+                    let mut y = pivot + self.contrast[ch] * (d - pivot);
+                    if d < pivot && pivot > lo {
+                        // Below the pivot, ease back to the film's minimum
+                        // density so the clear base stays clear (monotonic
+                        // for any contrast between 0 and 2).
+                        let w = (pivot - d) / (pivot - lo);
+                        y = w * d + (1.0 - w) * y;
+                    }
+                    y.min(cap).max(lo)
+                })
+                .collect();
+            Series { start, step: c.step, values }
+        });
+        RgbSeries { red: r, green: g, blue: b }
+    }
+}
+
+impl Datasheet {
+    /// The datasheet as developed with `push` (0 = normal): its curves
+    /// replaced by that development's, and the stops it is rated faster by.
+    /// `None` if the film has no such development.
+    pub fn developed(&self, push: i32) -> Option<Self> {
+        if push == 0 {
+            return Some(self.clone());
+        }
+        let d = self.development.iter().find(|d| d.push == push)?;
+        let mut out = self.clone();
+        let curves = d.curves.clone().or_else(|| d.model.as_ref().map(|m| m.apply(&self.curves)));
+        if let Some(c) = curves {
+            out.scan_reference = Some(self.curves.clone());
+            out.curves = c;
+        }
+        out.development.clear();
+        Some(out)
+    }
 }
 
 /// The paper a colour negative is printed on.
@@ -259,6 +358,24 @@ impl Datasheet {
             let n = m.frequencies.len();
             if n < 2 || m.red.len() != n || m.green.len() != n || m.blue.len() != n {
                 bail!("datasheet mtf: each layer needs one value per frequency");
+            }
+        }
+        for d in &self.development {
+            if d.push == 0 || self.development.iter().filter(|e| e.push == d.push).count() > 1 {
+                bail!("development '{}': push must be non-zero and appear once", d.label);
+            }
+            if d.curves.is_some() && d.model.is_some() {
+                bail!("development '{}': give measured curves or a model, not both", d.label);
+            }
+            if let Some(m) = &d.model {
+                if m.contrast.iter().chain(&m.shift).any(|v| !v.is_finite()) || m.contrast.iter().any(|&a| a <= 0.0) {
+                    bail!("development '{}': model needs positive contrast and finite shift", d.label);
+                }
+            }
+            if let Some(c) = &d.curves {
+                for (s, n) in c.get().into_iter().zip(["red", "green", "blue"]) {
+                    s.validate(&format!("development '{}' curve {n}", d.label))?;
+                }
             }
         }
         let mono = self.densitometry == Densitometry::DiffuseVisual;
@@ -487,6 +604,13 @@ fn curve_grid(c: &RgbSeries) -> (f64, f64, usize) {
     (x0, step, ((x1 - x0) / step).round() as usize + 1)
 }
 
+/// Per-channel densities of a set of curves on their common grid.
+fn curves_table(curves: &RgbSeries) -> Table {
+    let (x0, step, n) = curve_grid(curves);
+    let c = curves.get();
+    Table { x0, step, y: (0..n).map(|k| [0, 1, 2].map(|ch| c[ch].at(x0 + step * k as f64))).collect() }
+}
+
 /// Dye amounts per log exposure for neutral exposures: the datasheet curves
 /// inverted through the dyes' spectra and the densitometer's response.
 fn analytical_table(curves: &RgbSeries, stack: &DyeStack, w: &[Spectrum; 3]) -> Table {
@@ -678,10 +802,15 @@ const LAB_SCAN_GREY: f64 = 0.70;
 const LAB_SCAN_GAMMA: f64 = 1.15;
 
 impl LabScan {
-    fn new(develop: &Table, gain: Vec3, dmin: Vec3, log_h_ref: f64) -> Self {
-        let p = |c: usize, x: f64| gain[c] * (develop.eval(c, x) - dmin[c]);
-        let p_ref = [0, 1, 2].map(|c| p(c, log_h_ref));
-        let slope = [0, 1, 2].map(|c| ((p(c, log_h_ref + 0.15) - p(c, log_h_ref - 0.15)) / 0.3).max(0.05));
+    /// `reference` is the development the scanner is set up for (normal
+    /// processing) and `normal_log_h_ref` its grey: the scanner keeps that
+    /// contrast, so a push or pull shows its own. Grey is still balanced on
+    /// the film actually scanned, as a scanner's auto-density does.
+    fn new(develop: &Table, reference: &Table, gain: Vec3, dmin: Vec3, log_h_ref: f64, normal_log_h_ref: f64) -> Self {
+        let p = |t: &Table, c: usize, x: f64| gain[c] * (t.eval(c, x) - dmin[c]);
+        let p_ref = [0, 1, 2].map(|c| p(develop, c, log_h_ref));
+        let x = normal_log_h_ref;
+        let slope = [0, 1, 2].map(|c| ((p(reference, c, x + 0.15) - p(reference, c, x - 0.15)) / 0.3).max(0.05));
         // Logistic through (0, LAB_SCAN_GREY) with slope -LAB_SCAN_GAMMA there.
         let e0 = LAB_SCAN_DMAX / LAB_SCAN_GREY - 1.0;
         let k = LAB_SCAN_GAMMA * (1.0 + e0) * (1.0 + e0) / (LAB_SCAN_DMAX * e0);
@@ -722,19 +851,28 @@ struct Key {
     datasheet: Datasheet,
     print: Option<PrintStock>,
     log_h_ref: u64,
+    push: i32,
 }
 
 static CACHE: Mutex<Vec<(Key, Arc<Core>)>> = Mutex::new(Vec::new());
 
 impl Core {
     /// Build (or fetch from cache) the model for a datasheet. `log_h_ref` is
-    /// the log exposure of the reference grey, used to aim the print.
-    pub fn get(process: Process, ds: &Datasheet, print: Option<&PrintStock>, log_h_ref: f64) -> Result<Arc<Core>> {
-        let key = Key { process, datasheet: ds.clone(), print: print.cloned(), log_h_ref: log_h_ref.to_bits() };
+    /// the log exposure of the reference grey at the film's normal rating,
+    /// used to aim the print. `push` picks one of the datasheet's push/pull
+    /// developments (0 = normal); the film is then rated `push` stops faster.
+    pub fn get(
+        process: Process,
+        ds: &Datasheet,
+        print: Option<&PrintStock>,
+        log_h_ref: f64,
+        push: i32,
+    ) -> Result<Arc<Core>> {
+        let key = Key { process, datasheet: ds.clone(), print: print.cloned(), log_h_ref: log_h_ref.to_bits(), push };
         if let Some((_, c)) = CACHE.lock().expect("cache").iter().find(|(k, _)| *k == key) {
             return Ok(c.clone());
         }
-        let core = Arc::new(Self::build(process, ds, print, log_h_ref)?);
+        let core = Arc::new(Self::build(process, ds, print, log_h_ref, push)?);
         let mut cache = CACHE.lock().expect("cache");
         if cache.len() >= 6 {
             cache.remove(0);
@@ -743,8 +881,16 @@ impl Core {
         Ok(core)
     }
 
-    fn build(process: Process, ds: &Datasheet, print: Option<&PrintStock>, log_h_ref: f64) -> Result<Self> {
+    fn build(process: Process, ds: &Datasheet, print: Option<&PrintStock>, log_h_ref: f64, push: i32) -> Result<Self> {
         ds.validate(process, print)?;
+        let normal_log_h_ref = log_h_ref;
+        let developed =
+            ds.developed(push).with_context(|| format!("this film has no push/pull development of {push:+} stops"))?;
+        let ds = &developed;
+        // Rated `push` stops faster: the grey card gets that much less exposure.
+        let log_h_ref = normal_log_h_ref - push as f64 * 2f64.log10();
+        // The development the lab scanner is set up for.
+        let reference = ds.scan_reference.as_ref().unwrap_or(&ds.curves);
         let to_layers = fit_sensitivity(&ds.sensitivity)?;
         let spread = ds.mtf.as_ref().map(|m| {
             [&m.red, &m.green, &m.blue].map(|v| fit_spread(&m.frequencies, v))
@@ -756,7 +902,8 @@ impl Core {
                 let curve = &ds.curves.green;
                 let develop = Table { x0, step, y: (0..n).map(|k| [curve.at(x0 + step * k as f64); 3]).collect() };
                 let dmin = [curve.values[0]; 3];
-                let lab_scan = LabScan::new(&develop, [1.0; 3], dmin, log_h_ref);
+                let scan_ref = curves_table(reference);
+                let lab_scan = LabScan::new(&develop, &scan_ref, [1.0; 3], dmin, log_h_ref, normal_log_h_ref);
                 // Silver is close to spectrally neutral: viewing the negative
                 // itself (unused by the app) is its density read flat.
                 let flat = [1.0 / 3.0; NW];
@@ -851,8 +998,17 @@ impl Core {
                     let s = color::mul_vec(&ji, &r);
                     printer.lights = [0, 1, 2].map(|c| printer.lights[c] + s[c].clamp(-0.5, 0.5));
                 }
-                let lab_scan = LabScan::new(&develop, gain, dmin, log_h_ref);
-                Ok(Self { process, to_layers, develop, printer: Some(printer), lab_scan: Some(lab_scan), viewer, spread })
+                let scan_ref = curves_table(reference);
+                let lab_scan = LabScan::new(&develop, &scan_ref, gain, dmin, log_h_ref, normal_log_h_ref);
+                Ok(Self {
+                    process,
+                    to_layers,
+                    develop,
+                    printer: Some(printer),
+                    lab_scan: Some(lab_scan),
+                    viewer,
+                    spread,
+                })
             }
         }
     }
@@ -910,7 +1066,14 @@ mod datasheet_tests {
 
     fn core(id: &str) -> (FilmPreset, Arc<Core>) {
         let p = FilmPreset::builtin(id).unwrap();
-        let c = Core::get(p.process.unwrap(), p.datasheet.as_ref().unwrap(), p.print.as_ref(), p.exposure.log_h_ref.unwrap()).unwrap();
+        let c = Core::get(
+            p.process.unwrap(),
+            p.datasheet.as_ref().unwrap(),
+            p.print.as_ref(),
+            p.exposure.log_h_ref.unwrap(),
+            0,
+        )
+        .unwrap();
         (p, c)
     }
 
@@ -1117,5 +1280,80 @@ mod datasheet_tests {
         // The grey card lands mid-scale, not at the ends.
         let grey = m.scan(m.densities([g; 3]))[1];
         assert!((0.1..0.4).contains(&grey), "{grey}");
+    }
+
+    #[test]
+    fn every_push_and_pull_renders_with_grey_held_and_contrast_following_the_push() {
+        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "trix400"] {
+            let p = FilmPreset::builtin(id).unwrap();
+            let pushes = p.developments();
+            assert!(pushes.len() >= 3, "{id}: expected pull and push options, got {pushes:?}");
+            let g = p.exposure.grey_linear as f32;
+            // Contrast of the scan about grey (one stop either side), green.
+            let look = |push: i32| {
+                let m = FilmModel::new(&p, &FilmParams { grain: 0.0, push, ..Default::default() }).unwrap();
+                let at = |stops: f32| m.scan(m.densities([g * 2f32.powf(stops); 3]));
+                let mut last = [-1.0f32; 3];
+                for i in 0..60 {
+                    let o = at(-8.0 + 0.2 * i as f32);
+                    // (A capped slide black can dip by a hair as the dye
+                    // layers flatten at slightly different exposures.)
+                    assert!(
+                        (0..3).all(|c| o[c] >= last[c] - 5e-4),
+                        "{id} push {push}: not monotonic: {last:?} -> {o:?}"
+                    );
+                    last = o;
+                }
+                (at(0.0), at(1.0)[1] - at(-1.0)[1])
+            };
+            let (grey0, contrast0) = look(0);
+            for &(push, _) in &pushes {
+                let (grey, contrast) = look(push);
+                // The lab scanner's auto-density (or, for a slide, the push
+                // rating) puts grey back where it was.
+                assert!(
+                    (0..3).all(|c| (grey[c] - grey0[c]).abs() < 0.03),
+                    "{id} push {push}: grey {grey:?} vs {grey0:?}"
+                );
+                // Pulls are softer, longer pushes contrastier. (Tri-X push 1
+                // is normal development, merely underexposed.)
+                if push < 0 {
+                    assert!(contrast < contrast0 - 0.005, "{id} push {push}: contrast {contrast} vs {contrast0}");
+                } else if push >= 2 {
+                    assert!(contrast > contrast0 + 0.005, "{id} push {push}: contrast {contrast} vs {contrast0}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn modelled_development_steepens_about_the_pivot_and_moves_faster() {
+        let line = Series { start: -2.0, step: 0.5, values: vec![0.2, 0.2, 0.7, 1.2, 1.7] };
+        let curves = RgbSeries { red: line.clone(), green: line.clone(), blue: line };
+        let m = DevelopmentModel { contrast: [1.2; 3], shift: [0.5; 3], pivot: None, max_density_drop: Some(0.3) };
+        let out = m.apply(&curves);
+        // Fog held; one step faster; 1.2x the density above fog; capped at 1.7 - 0.3.
+        assert_eq!((out.green.start, out.green.values.len()), (-2.5, 6));
+        let want = [0.2, 0.2, 0.8, 1.4, 1.4, 1.4];
+        for (v, w) in out.green.values.iter().zip(want) {
+            assert!((v - w).abs() < 1e-9, "{:?}", out.green.values);
+        }
+    }
+
+    #[test]
+    fn trix_push_uses_kodaks_measured_curves() {
+        let p = FilmPreset::builtin("trix400").unwrap();
+        let ds = p.datasheet.as_ref().unwrap();
+        let d2 = ds.developed(2).unwrap();
+        let measured = ds.development.iter().find(|d| d.push == 2).unwrap().curves.as_ref().unwrap();
+        assert_eq!(&d2.curves, measured);
+        assert_eq!(d2.scan_reference.as_ref(), Some(&ds.curves));
+        // Push 1 is normal development, rated one stop faster.
+        assert_eq!(ds.developed(1).unwrap().curves, ds.curves);
+        assert!(ds.developed(5).is_none());
+        assert!(p.developments().iter().all(|d| !d.1.contains("modelled")));
+        let e100 = FilmPreset::builtin("ektachrome-e100").unwrap();
+        assert!(e100.developments().iter().all(|d| d.1.ends_with("· modelled")));
+        assert!(FilmPreset::builtin("kodachrome64").unwrap().developments().is_empty());
     }
 }

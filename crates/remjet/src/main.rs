@@ -437,6 +437,7 @@ fn describe_change(a: &Edit, b: &Edit) -> String {
     };
     check(a.preset != b.preset, "film");
     check(a.output != b.output, "output mode");
+    check(a.push != b.push, "development");
     check(a.exposure_ev != b.exposure_ev, "exposure");
     check(a.warmth != b.warmth, "warmth");
     check(a.tint != b.tint, "tint");
@@ -1101,6 +1102,7 @@ impl FilmApp {
         // are scanned or projected.
         let loaded = self.edit.preset.as_deref().and_then(|id| presets::load(id).ok());
         let mono = loaded.as_ref().is_some_and(|p| p.is_monochrome());
+        let developments = loaded.as_ref().map(|p| p.developments()).unwrap_or_default();
         let print = loaded.filter(|p| p.is_negative()).and_then(|p| p.print);
         ui.add_enabled_ui(self.edit.preset.is_some(), |ui| {
             let negative = print.is_some() || mono;
@@ -1129,6 +1131,31 @@ impl FilmApp {
                 }
             });
         });
+        // Push and pull: only the processes the film's datasheet lists.
+        if !developments.is_empty() {
+            if !developments.iter().any(|d| d.0 == self.edit.push) {
+                self.edit.push = 0;
+            }
+            let name =
+                |push: i32| developments.iter().find(|d| d.0 == push).map_or("Normal".to_string(), |d| d.1.clone());
+            egui::ComboBox::from_label("Development")
+                .selected_text(name(self.edit.push))
+                .show_ui(ui, |ui| {
+                    let mut all: Vec<i32> = developments.iter().map(|d| d.0).chain([0]).collect();
+                    all.sort();
+                    for push in all {
+                        ui.selectable_value(&mut self.edit.push, push, name(push));
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Rate the film faster (push) or slower (pull) and develop it to match: pushes get contrastier \
+                     and lose shadow detail, pulls get softer. Exposure follows the rating. Tri-X uses Kodak's \
+                     measured curves. Kodak published no push curves for the others, so theirs are marked \
+                     \"modelled\": the colour negatives are fitted to Kodak's measured Portra 800 pushes, and \
+                     E100 is an estimate at Kodak's push rating.",
+                );
+        }
         ui.add_space(8.0);
 
         ui.spacing_mut().slider_width = 160.0;
