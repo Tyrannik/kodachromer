@@ -37,6 +37,9 @@ pub struct Edit {
     pub grain_size: f32,
     /// Highlight shoulder, -1 (recover detail) .. +1 (brighter, blows sooner).
     pub highlights: f32,
+    /// Fit the camera's highlight range onto the film's, so the sensor's clip
+    /// point lands on the film's white. Off renders the datasheet curve as is.
+    pub fit_highlights: bool,
     /// Detail sharpening (like a scanner's), 0 = off.
     pub sharpen: f32,
     /// Halation glow around bright highlights, 0 = off .. 1 = strong.
@@ -56,6 +59,7 @@ impl Default for Edit {
             grain: 1.0,
             grain_size: 1.0,
             highlights: 0.0,
+            fit_highlights: true,
             sharpen: 0.3,
             // Kodachrome had an anti-halation backing, so off by default.
             halation: 0.0,
@@ -261,6 +265,7 @@ fn render_framed(
                 grain: edit.grain as f64,
                 grain_size: edit.grain_size as f64,
                 highlights: edit.highlights as f64,
+                sensor_white: edit.fit_highlights.then(|| cam.clip_white()),
                 halation: edit.halation as f64,
                 output: edit.output,
                 pixel_scale,
