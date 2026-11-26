@@ -10,7 +10,7 @@ How Remjet is put together, for anyone reading or extending the code.
 | `crates/remjet` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
 | `crates/remjet-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
 | `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml` and `portra400.toml` (spectral model). |
-| `assets/` | Icon. |
+| `assets/` | Icon, and the Barlow fonts the app embeds (`assets/fonts`, SIL OFL 1.1). |
 
 ## Image pipeline
 
@@ -52,7 +52,14 @@ How Remjet is put together, for anyone reading or extending the code.
   directly, screen/room flare as the black floor, lamp colour, radial falloff from frame position).
 - The wgpu device's uncaptured-error handler logs instead of panicking, so a bogus window size
   during a resize can't crash the app.
-- "Tune look" edits a copy of the film preset live; Save writes a user override, which preview,
+- Look (`theme.rs`): every grey in the UI is neutral (R = G = B) and the photo sits on a slightly
+  lighter surround than the panels, so the interface never tints colour judgement. Colour is used in
+  one place, the library's film strip (edge-print amber), plus red for warnings. Selected buttons
+  and slider fills stay grey for the same reason. Fonts: Barlow, with Barlow Condensed for section
+  titles and the edge print; egui's own fonts remain as fallbacks for symbols.
+- Sliders round their value to their step every frame they are shown (egui clamps and snaps), so a
+  slider's step must be finer than the values it displays, or showing it silently edits them.
+- "Tune" edits a copy of the film preset live; Save writes a user override, which preview,
   thumbnails, export and the CLI all pick up.
 
 ## Spectral film model

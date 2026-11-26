@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A new look for the app.** The library is a strip of slide film: frames sit between sprocket
+  holes with their frame number printed along the edge, and the frame you're editing is outlined.
+  Everything around the photo is now strictly neutral grey, so nothing on screen tints how you judge
+  its colour. The edit panel is grouped into Film, Adjust, Tune, Copy settings and Export, with
+  labels in one column. Compare and zoom moved to a bar under the photo. Type is Barlow.
+- **Fix:** opening **Tune** no longer marks the film as changed. The sliders snapped some values to
+  their step just by being shown (Kodachrome's 0.003 screen black became 0), so saving changed
+  the film without you touching it.
 - **Highlights fitted to each film.** The camera's brightest recorded tone (about three stops over
   mid-grey on the M9) now lands on the film's white, with a smooth shoulder from one stop over grey.
   Ektachrome and Kodachrome whites reach white instead of stopping at a dull light grey, and the top
