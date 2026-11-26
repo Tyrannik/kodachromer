@@ -846,7 +846,7 @@ mod datasheet_tests {
     #[test]
     #[ignore]
     fn spectral_report() {
-        for id in ["ektachrome-e100", "portra400"] {
+        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400"] {
             let (p, c) = core(id);
             println!("== {id}");
             println!("to_layers {:?}", c.to_layers.map(|r| r.map(|v| (v * 1000.0).round() / 1000.0)));
@@ -906,7 +906,7 @@ mod datasheet_tests {
 
     #[test]
     fn sensitivity_fit_is_layer_dominant_and_white_balanced() {
-        for id in ["ektachrome-e100", "portra400"] {
+        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400"] {
             let (_, c) = core(id);
             for (i, row) in c.to_layers.iter().enumerate() {
                 assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-9);
@@ -951,8 +951,27 @@ mod datasheet_tests {
     }
 
     #[test]
+    fn every_negative_scans_and_prints_its_grey_neutral() {
+        use crate::film::OutputMode;
+        for id in ["portra400", "ektar100", "gold200", "ultramax400"] {
+            let (p, c) = core(id);
+            let g = p.exposure.grey_linear as f32;
+            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, output: OutputMode::Print, ..Default::default() }).unwrap();
+            let d = m.densities([g; 3]);
+            let aim = (p.print.as_ref().unwrap().grey_density - c.viewer.white_density) as f32;
+            assert!(d.iter().all(|v| (v - aim).abs() < 0.02), "{id}: {d:?} vs {aim}");
+            let spread = d.iter().cloned().fold(f32::MIN, f32::max) - d.iter().cloned().fold(f32::MAX, f32::min);
+            assert!(spread < 0.003, "{id}: printed grey not neutral: {d:?}");
+            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, output: OutputMode::Scan, ..Default::default() }).unwrap();
+            let o = m.scan(m.densities([g; 3]));
+            let spread = o.iter().cloned().fold(f32::MIN, f32::max) - o.iter().cloned().fold(f32::MAX, f32::min);
+            assert!(spread < 0.01, "{id}: scanned grey not neutral: {o:?}");
+        }
+    }
+
+    #[test]
     fn ramps_are_monotonic_from_black_to_white() {
-        for id in ["ektachrome-e100", "portra400"] {
+        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400"] {
             let (p, _) = core(id);
             let m = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
             let g = p.exposure.grey_linear as f32;

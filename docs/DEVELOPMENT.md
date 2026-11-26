@@ -9,7 +9,7 @@ How Remjet is put together, for anyone reading or extending the code.
 | `crates/remjet-core` | Everything that touches pixels: DNG decoding, colour science, the film model, grain, halation, edits/sidecars, export, EXIF. No UI. |
 | `crates/remjet` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
 | `crates/remjet-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
-| `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml` and `portra400.toml` (spectral model). |
+| `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml`, `portra400.toml`, `ektar100.toml`, `gold200.toml` and `ultramax400.toml` (spectral model). |
 | `assets/` | Icon. |
 
 ## Image pipeline
@@ -57,7 +57,7 @@ How Remjet is put together, for anyone reading or extending the code.
 
 ## Spectral film model
 
-Ektachrome E100 and Portra 400 use `spectral.rs` instead of the Kodachrome matrix model. A preset
+Ektachrome E100 and the colour negatives (Portra 400, Ektar 100, Gold 200, Ultramax 400) use `spectral.rs` instead of the Kodachrome matrix model. A preset
 with `process = "reversal"` or `"negative"` carries its datasheet as `[datasheet]` (and, for a
 negative, its paper as `[print]`); everything else is computed from those spectra when the film is
 first used, and cached:
@@ -91,8 +91,8 @@ first used, and cached:
    pitch.
 
 Reference tables are in `cie.rs`: CIE 015:2018 colour-matching functions and daylight basis, and
-the ISO 5-3 Status A and M responses. Portra's grain strength and the print grey aim are not in the
-datasheets; both are marked as estimates in the preset.
+the ISO 5-3 Status A and M responses. The negatives' grain strengths (Kodak gives only Print Grain Index)
+and the print grey aim are not in the datasheets; both are marked as estimates in the presets.
 
 ## Film data sources
 
@@ -105,6 +105,11 @@ datasheets; both are marked as estimates in the preset.
 - Kodak publication **E-4050**, *KODAK PROFESSIONAL PORTRA 400 Film*: characteristic curves
   (Status M, C-41, with Log H Ref), spectral sensitivity, spectral density of a mid-scale neutral
   and of minimum density, MTF.
+- Kodak publication **E-4046**, *KODAK PROFESSIONAL EKTAR 100 Film*: characteristic curves
+  (Status M, C-41, with Log H Ref), spectral sensitivity, spectral density of a mid-scale neutral
+  and of minimum density, MTF.
+- Kodak publications **E-7022**, *KODAK GOLD 200 Film*, and **E-7023**, *KODAK ULTRA MAX 400
+  Film*: the same plots as E-4046 except MTF, which they don't publish.
 - Kodak publication **E-4070**, *KODAK PROFESSIONAL ENDURA PREMIER Paper*: characteristic curves
   (Status A reflection), spectral sensitivity, spectral dye density.
 - **ISO 5-3:1995** (ANSI/NAPM IT2.18), Tables 3 and 4: Status A and Status M spectral products.
@@ -124,7 +129,7 @@ the orientation maths used by zoom.
 
 ## Ideas / roadmap
 
-- More films as data presets (Kodachrome 25, Ektar 100, Portra 160, Tri-X); the catalogue of
+- More films as data presets (Kodachrome 25, Portra 160, Tri-X, which needs a black-and-white model); the catalogue of
   Kodak datasheets is a good starting point.
 - Highlight reconstruction for clipped raw channels.
 - Lens corrections (M9 vignetting/colour shading), crop and straighten.

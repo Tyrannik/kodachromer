@@ -159,6 +159,9 @@ impl Default for Halation {
 pub const KODACHROME_64: &str = include_str!("../../../presets/kodachrome64.toml");
 pub const EKTACHROME_E100: &str = include_str!("../../../presets/ektachrome-e100.toml");
 pub const PORTRA_400: &str = include_str!("../../../presets/portra400.toml");
+pub const EKTAR_100: &str = include_str!("../../../presets/ektar100.toml");
+pub const GOLD_200: &str = include_str!("../../../presets/gold200.toml");
+pub const ULTRAMAX_400: &str = include_str!("../../../presets/ultramax400.toml");
 
 impl FilmPreset {
     pub fn from_toml(text: &str) -> Result<Self> {
@@ -194,7 +197,10 @@ impl FilmPreset {
             "kodachrome64" => Self::from_toml(KODACHROME_64),
             "ektachrome-e100" => Self::from_toml(EKTACHROME_E100),
             "portra400" => Self::from_toml(PORTRA_400),
-            _ => bail!("unknown built-in preset '{id}' (available: kodachrome64, ektachrome-e100, portra400)"),
+            "ektar100" => Self::from_toml(EKTAR_100),
+            "gold200" => Self::from_toml(GOLD_200),
+            "ultramax400" => Self::from_toml(ULTRAMAX_400),
+            _ => bail!("unknown built-in preset '{id}' (available: kodachrome64, ektachrome-e100, portra400, ektar100, gold200, ultramax400)"),
         }
     }
 
