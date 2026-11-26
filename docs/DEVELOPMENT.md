@@ -32,7 +32,11 @@ How Remjet is put together, for anyone reading or extending the code.
    - Grain in density space: clumpy, density-dependent, seeded from absolute frame coordinates so any
      crop renders identical grain to the full frame.
    - **Scanner**: grey balance at the mid-grey density, transmittance with white at the film base and
-     a black-point density, scanner gamma and colour balance → display-linear sRGB.
+     a black-point density, scanner gamma and colour balance → display-linear sRGB. Lab-scanned
+     negatives and Kodachrome then get a scanner colour matrix (`FilmParams::scanner_colour`):
+     the readings are in the layers' wide primaries, so they are mapped back to sRGB
+     (inverse of the layer-sensitivity fit for negatives, Rec.2020 → sRGB for Kodachrome), with
+     out-of-gamut colours pulled toward the grey of the same luminance.
 5. **Output** (`output.rs`, `exif.rs`, `icc.rs`): sRGB encode, orientation, JPEG (4:4:4, optimised
    tables) with a minimal EXIF block built from the DNG's metadata and an embedded sRGB ICC profile
    (generated in code, ICC v2.1).

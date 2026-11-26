@@ -40,6 +40,10 @@ pub struct Edit {
     /// Fit the camera's highlight range onto the film's, so the sensor's clip
     /// point lands on the film's white. Off renders the datasheet curve as is.
     pub fit_highlights: bool,
+    /// Scanner colour correction for scanned negatives and Kodachrome: map
+    /// the film's layer readings back to true colour, as a lab scanner does.
+    /// Off shows the raw readings, which washes out saturated colours.
+    pub scanner_colour: bool,
     /// Detail sharpening (like a scanner's), 0 = off.
     pub sharpen: f32,
     /// Halation glow around bright highlights, 0 = off .. 1 = strong.
@@ -63,6 +67,7 @@ impl Default for Edit {
             grain_size: 1.0,
             highlights: 0.0,
             fit_highlights: true,
+            scanner_colour: true,
             sharpen: 0.3,
             // Kodachrome had an anti-halation backing, so off by default.
             halation: 0.0,
@@ -270,6 +275,7 @@ fn render_framed(
                 grain_size: edit.grain_size as f64,
                 highlights: edit.highlights as f64,
                 sensor_white: edit.fit_highlights.then(|| cam.clip_white()),
+                scanner_colour: edit.scanner_colour,
                 halation: edit.halation as f64,
                 push: if preset.supports_push(edit.push) { edit.push } else { 0 },
                 output: edit.output,
