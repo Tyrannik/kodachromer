@@ -1,0 +1,141 @@
+# Kodak Professional T-Max 400 (400TMY) developed in D-76 — black-and-white
+# negative, lab-scanned.
+#
+# Built from Kodak publication F-4043 (KODAK PROFESSIONAL T-MAX 400 Film,
+# technical data, February 2016), digitised from the PDF's vector plots:
+#   - characteristic curve: diffuse visual density, KODAK PROFESSIONAL D-76
+#     Developer, small tank, 20 °C, 8 minutes. Of the three published times
+#     (6, 8 and 11 min) this is the closest to Kodak's printing aim of
+#     contrast index 0.56.
+#   - spectral sensitivity (log sensitivity, the dotted curve for D = 1.0
+#     above D-min, as for Tri-X)
+#   - MTF (D-76, diffuse visual)
+#   - diffuse rms granularity: 10 (D-76)
+# One silver image, so every channel shares the same curve and the result is
+# exactly neutral. Like Tri-X, the negative is viewed through the lab scanner
+# used for the colour negatives (see crates/remjet-core/src/spectral.rs).
+
+id = "tmax400"
+name = "T-Max 400"
+version = 1
+process = "monochrome"
+
+[exposure]
+# Scene-linear camera value treated as an 18% grey card (app calibration).
+grey_linear = 0.12
+# Its exposure on the film: ISO 400 with standard meter calibration,
+# H = 8 / S lux-seconds -> log10(0.02). F-4043 gives no Log H Ref.
+log_h_ref = -1.70
+
+[look]
+interimage = 0.0
+contrast = 1.0
+flare = 0.004
+
+[scan]
+black_density = 3.0
+neutral_balance = 0.0
+gamma = 1.0
+white_balance = [1.0, 1.0, 1.0]
+
+[grain]
+# Diffuse rms granularity (x1000, 48 µm aperture, at net density 1.0) from
+# F-4043 (D-76). Silver grain has no colour, so it is the same in every
+# channel.
+rms_granularity = 10.0
+correlation = 1.0
+blur_px = 1.2
+amount = 0.4
+
+[halation]
+# Glow from light reflecting off the film base (per-image Halation slider;
+# 0 by default). Neutral for a black-and-white film.
+radius_px = 40.0
+threshold_stops = 1.75
+tint = [1.0, 1.0, 1.0]
+
+[datasheet]
+densitometry = "diffuse_visual"
+
+# Diffuse visual density vs log10 exposure (lux-seconds), D-76 8 min.
+[datasheet.curves.neutral]
+start = -3.50
+step = 0.05
+values = [
+  0.223, 0.225, 0.226, 0.227, 0.228, 0.229, 0.231, 0.233, 0.236, 0.240,
+  0.246, 0.252, 0.260, 0.271, 0.285, 0.298, 0.314, 0.331, 0.349, 0.368,
+  0.388, 0.408, 0.427, 0.447, 0.468, 0.491, 0.515, 0.539, 0.564, 0.589,
+  0.614, 0.640, 0.666, 0.693, 0.722, 0.750, 0.779, 0.809, 0.840, 0.871,
+  0.904, 0.937, 0.969, 1.004, 1.038, 1.073, 1.109, 1.146, 1.183, 1.220,
+  1.255, 1.292, 1.328, 1.363, 1.398, 1.432, 1.468, 1.504, 1.543, 1.582,
+  1.621, 1.659, 1.695, 1.730, 1.764, 1.799, 1.832, 1.864, 1.896, 1.928,
+  1.959, 1.990, 2.021, 2.052, 2.084, 2.115, 2.146,
+]
+
+# Log10 spectral sensitivity vs wavelength (nm), D = 1.0 above D-min.
+[datasheet.sensitivity.neutral]
+start = 380.00
+step = 5
+values = [
+  1.731, 1.736, 1.750, 1.797, 1.840, 1.844, 1.840, 1.856, 1.871, 1.878,
+  1.881, 1.878, 1.871, 1.861, 1.851, 1.846, 1.840, 1.830, 1.810, 1.769,
+  1.731, 1.719, 1.721, 1.729, 1.740, 1.742, 1.750, 1.787, 1.830, 1.870,
+  1.891, 1.861, 1.830, 1.851, 1.871, 1.836, 1.801, 1.809, 1.830, 1.849,
+  1.861, 1.861, 1.840, 1.780, 1.712, 1.656, 1.621, 1.620, 1.641, 1.707,
+  1.721, 1.554, 1.332,
+]
+
+[datasheet.mtf]
+# Response (%) vs spatial frequency (cycles/mm). F-4043's curve stops near
+# 80 cycles/mm.
+frequencies = [3, 5, 7, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80]
+neutral = [108.2, 111.2, 116.3, 120.6, 124.1, 121.3, 112.7, 102.8, 84.4, 73.6, 66.6, 58.7, 52.1]
+
+# Push and pull processing (per-image Development menu). F-4043 publishes
+# D-76 small-tank curves (20 °C) for 6, 8 and 11 minutes. It says a one-stop
+# push needs no extra development, gives 9 1/4 min in D-76 for EI 1600, and
+# does not recommend D-76 for EI 3200. The 6- and 11-minute curves stand in
+# for a one-stop pull and a two-stop push.
+
+[[datasheet.development]]
+push = -1
+label = "Pull 1 (EI 200)"
+source = "F-4043: D-76, small tank, 20 °C, 6 min"
+
+[datasheet.development.curves.neutral]
+start = -3.50
+step = 0.05
+values = [
+  0.218, 0.219, 0.220, 0.221, 0.222, 0.222, 0.222, 0.222, 0.222, 0.224,
+  0.226, 0.229, 0.233, 0.239, 0.246, 0.254, 0.263, 0.273, 0.285, 0.297,
+  0.310, 0.323, 0.335, 0.348, 0.363, 0.378, 0.393, 0.409, 0.425, 0.442,
+  0.459, 0.476, 0.494, 0.513, 0.534, 0.554, 0.575, 0.595, 0.615, 0.635,
+  0.657, 0.681, 0.707, 0.732, 0.758, 0.783, 0.808, 0.832, 0.858, 0.885,
+  0.913, 0.940, 0.969, 0.996, 1.023, 1.050, 1.079, 1.109, 1.141, 1.173,
+  1.205, 1.233, 1.259, 1.285, 1.311, 1.339, 1.369, 1.400, 1.430, 1.458,
+  1.485, 1.510, 1.533, 1.556, 1.577, 1.598, 1.617,
+]
+
+[[datasheet.development]]
+push = 1
+label = "Push 1 (EI 800)"
+source = "F-4043: rated one stop faster, normal development (D-76, 8 min)"
+
+[[datasheet.development]]
+push = 2
+label = "Push 2 (EI 1600)"
+source = "F-4043: D-76, small tank, 20 °C, 11 min (Kodak gives 9 1/4 min)"
+
+[datasheet.development.curves.neutral]
+start = -3.50
+step = 0.05
+values = [
+  0.247, 0.248, 0.250, 0.253, 0.255, 0.256, 0.259, 0.262, 0.266, 0.272,
+  0.280, 0.289, 0.301, 0.317, 0.336, 0.359, 0.385, 0.415, 0.449, 0.485,
+  0.521, 0.559, 0.598, 0.637, 0.678, 0.719, 0.760, 0.801, 0.843, 0.884,
+  0.924, 0.964, 1.004, 1.047, 1.092, 1.139, 1.185, 1.232, 1.278, 1.327,
+  1.376, 1.426, 1.476, 1.528, 1.579, 1.632, 1.684, 1.736, 1.789, 1.841,
+  1.893, 1.945, 1.995, 2.046, 2.095, 2.144, 2.192, 2.241, 2.288, 2.335,
+  2.380, 2.424, 2.468, 2.511, 2.554, 2.596, 2.638, 2.680, 2.722, 2.763,
+  2.805, 2.847, 2.889, 2.931, 2.972, 3.012, 3.052,
+]

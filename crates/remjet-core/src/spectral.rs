@@ -1081,7 +1081,7 @@ mod datasheet_tests {
     #[test]
     #[ignore]
     fn spectral_report() {
-        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "portra800"] {
+        for id in ["ektachrome-e100", "ektachrome-e100vs", "ektachrome-e200", "portra160", "portra400", "ektar100", "gold200", "ultramax400", "portra800"] {
             let (p, c) = core(id);
             println!("== {id}");
             println!("to_layers {:?}", c.to_layers.map(|r| r.map(|v| (v * 1000.0).round() / 1000.0)));
@@ -1141,7 +1141,7 @@ mod datasheet_tests {
 
     #[test]
     fn sensitivity_fit_is_layer_dominant_and_white_balanced() {
-        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "portra800"] {
+        for id in ["ektachrome-e100", "ektachrome-e100vs", "ektachrome-e200", "portra160", "portra400", "ektar100", "gold200", "ultramax400", "portra800"] {
             let (_, c) = core(id);
             for (i, row) in c.to_layers.iter().enumerate() {
                 assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-9);
@@ -1188,7 +1188,7 @@ mod datasheet_tests {
     #[test]
     fn every_negative_scans_and_prints_its_grey_neutral() {
         use crate::film::OutputMode;
-        for id in ["portra400", "ektar100", "gold200", "ultramax400", "portra800"] {
+        for id in ["portra160", "portra400", "ektar100", "gold200", "ultramax400", "portra800"] {
             let (p, c) = core(id);
             let g = p.exposure.grey_linear as f32;
             let m = FilmModel::new(&p, &FilmParams { grain: 0.0, output: OutputMode::Print, ..Default::default() }).unwrap();
@@ -1206,7 +1206,20 @@ mod datasheet_tests {
 
     #[test]
     fn ramps_are_monotonic_from_black_to_white() {
-        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "portra800", "trix400"] {
+        for id in [
+            "ektachrome-e100",
+            "ektachrome-e100vs",
+            "ektachrome-e200",
+            "portra160",
+            "portra400",
+            "ektar100",
+            "gold200",
+            "ultramax400",
+            "portra800",
+            "trix400",
+            "tmax100",
+            "tmax400",
+        ] {
             let (p, _) = core(id);
             let m = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
             let g = p.exposure.grey_linear as f32;
@@ -1258,8 +1271,14 @@ mod datasheet_tests {
     }
 
     #[test]
-    fn trix_is_exactly_neutral_and_reproduces_its_curve() {
-        let (p, c) = core("trix400");
+    fn black_and_white_films_are_exactly_neutral_and_reproduce_their_curve() {
+        for id in ["trix400", "tmax100", "tmax400"] {
+            black_and_white_is_neutral(id);
+        }
+    }
+
+    fn black_and_white_is_neutral(id: &str) {
+        let (p, c) = core(id);
         let ds = p.datasheet.as_ref().unwrap();
         // One curve in the TOML, the same in every channel.
         assert_eq!(ds.curves.red, ds.curves.blue);
@@ -1272,19 +1291,32 @@ mod datasheet_tests {
         // Coloured light still gives a neutral (grey) result.
         for rgb in [[g, g, g], [g * 3.0, g * 0.2, g * 0.1], [g * 0.1, g * 0.5, g * 4.0], [1.0, 0.5, 0.05]] {
             let o = m.scan(m.densities(rgb));
-            assert!((o[0] - o[1]).abs() < 1e-5 && (o[2] - o[1]).abs() < 1e-5, "{rgb:?} -> {o:?}");
+            assert!((o[0] - o[1]).abs() < 1e-5 && (o[2] - o[1]).abs() < 1e-5, "{id}: {rgb:?} -> {o:?}");
         }
         // Panchromatic: strong red light still exposes the film.
         let red = m.scan(m.densities([g * 2.0, g * 0.05, g * 0.05]))[1];
-        assert!(red > 0.02, "{red}");
+        assert!(red > 0.02, "{id}: {red}");
         // The grey card lands mid-scale, not at the ends.
         let grey = m.scan(m.densities([g; 3]))[1];
-        assert!((0.1..0.4).contains(&grey), "{grey}");
+        assert!((0.1..0.4).contains(&grey), "{id}: {grey}");
     }
 
     #[test]
     fn every_push_and_pull_renders_with_grey_held_and_contrast_following_the_push() {
-        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "portra800", "trix400"] {
+        for id in [
+            "ektachrome-e100",
+            "ektachrome-e100vs",
+            "ektachrome-e200",
+            "portra160",
+            "portra400",
+            "ektar100",
+            "gold200",
+            "ultramax400",
+            "portra800",
+            "trix400",
+            "tmax100",
+            "tmax400",
+        ] {
             let p = FilmPreset::builtin(id).unwrap();
             let pushes = p.developments();
             assert!(pushes.len() >= 2, "{id}: expected pull and push options, got {pushes:?}");
@@ -1297,9 +1329,11 @@ mod datasheet_tests {
                 for i in 0..60 {
                     let o = at(-8.0 + 0.2 * i as f32);
                     // (A capped slide black can dip by a hair as the dye
-                    // layers flatten at slightly different exposures.)
+                    // layers flatten at slightly different exposures: up
+                    // to 0.001 of white on E100VS, whose red maximum is
+                    // lower than its green and blue.)
                     assert!(
-                        (0..3).all(|c| o[c] >= last[c] - 5e-4),
+                        (0..3).all(|c| o[c] >= last[c] - 1.2e-3),
                         "{id} push {push}: not monotonic: {last:?} -> {o:?}"
                     );
                     last = o;
@@ -1358,6 +1392,14 @@ mod datasheet_tests {
         assert!(p800.developments().iter().all(|d| !d.1.contains("modelled")));
         let e100 = FilmPreset::builtin("ektachrome-e100").unwrap();
         assert!(e100.developments().iter().all(|d| d.1.ends_with("· modelled")));
+        // T-Max 400's pull and pushes are measured; T-Max 100 has no curve
+        // shorter than normal, so only its pull is modelled.
+        let t400 = FilmPreset::builtin("tmax400").unwrap();
+        assert_eq!(t400.developments().iter().map(|d| d.0).collect::<Vec<_>>(), [-1, 1, 2]);
+        assert!(t400.developments().iter().all(|d| !d.1.contains("modelled")));
+        let t100 = FilmPreset::builtin("tmax100").unwrap();
+        let modelled: Vec<i32> = t100.developments().iter().filter(|d| d.1.contains("modelled")).map(|d| d.0).collect();
+        assert_eq!(modelled, [-1]);
         assert!(FilmPreset::builtin("kodachrome64").unwrap().developments().is_empty());
     }
 }
