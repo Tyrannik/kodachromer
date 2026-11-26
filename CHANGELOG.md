@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Three new colour negatives: Ektar 100, Gold 200 and Ultramax 400.** Each is built from its own
+  Kodak datasheet (E-4046, E-7022, E-7023) the same way as Portra 400: characteristic curves,
+  layer sensitivities and the negative's measured spectra, digitised from the PDFs' vector plots,
+  printed on Endura Premier paper (E-4070). Ektar uses its published MTF for film sharpness; Kodak
+  publishes none for Gold or Ultramax. Grain strengths are estimates from Kodak's Print Grain Index.
+  All three use the camera-to-film highlight fit.
 - **Highlights fitted to each film.** The camera's brightest recorded tone (about three stops over
   mid-grey on the M9) now lands on the film's white, with a smooth shoulder from one stop over grey.
   Ektachrome and Kodachrome whites reach white instead of stopping at a dull light grey, and the top

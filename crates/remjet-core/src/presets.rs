@@ -14,6 +14,9 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("kodachrome64", "Kodachrome 64"),
     ("ektachrome-e100", "Ektachrome E100"),
     ("portra400", "Portra 400"),
+    ("ektar100", "Ektar 100"),
+    ("gold200", "Gold 200"),
+    ("ultramax400", "Ultramax 400"),
 ];
 
 pub fn user_dir() -> Option<PathBuf> {
