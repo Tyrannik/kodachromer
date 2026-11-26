@@ -40,8 +40,8 @@ Optional **halation**, the red glow around bright lights that film without an an
 - **Kodachrome 64, built from Kodak data.** Characteristic curves and dye cross-absorption are
   digitised from Kodak publication E-55. A virtual scanner then gives the scanned-slide look.
 - **Ektachrome E100 and Portra 400, modelled from their spectra.** Layer sensitivities, dyes,
-  curves and sharpness all come from Kodak's datasheets (E-4000, E-4050). Portra is shown as an
-  optical print on Endura Premier paper (E-4070).
+  curves and sharpness all come from Kodak's datasheets (E-4000, E-4050). Portra is shown as a lab
+  scan of the negative, or as an optical print on Endura Premier paper (E-4070).
 - **Per-image controls:** exposure, warmth, tint, highlights, halation, sharpen, grain, grain size.
   Double-click any slider to reset it.
 - **Tune the film itself:** brightness, contrast, saturation, shadow lift, black depth, scanner

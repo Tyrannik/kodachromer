@@ -317,6 +317,9 @@ pub enum OutputMode {
     /// Read by a film scanner: open shadows, scanner black point and balance.
     #[default]
     Scan,
+    /// Colour negatives only: an optical print on the preset's paper. (For a
+    /// negative, `Scan` is a lab scan of the negative itself.)
+    Print,
     /// Projected onto a screen: the slide's full density range, deep blacks
     /// limited only by screen/room flare, lamp colour and corner falloff.
     Projection,
@@ -432,7 +435,7 @@ enum Engine {
     Matrix { analytical: [Lut; 3], dyes: [[f32; 3]; 3] },
     /// Datasheet-derived: the state is dye amounts (reversal) or Status M
     /// density (negative); [`spectral::Core::view`] turns it into colour.
-    Spectral { develop: [Lut; 3], core: std::sync::Arc<spectral::Core> },
+    Spectral { develop: [Lut; 3], core: std::sync::Arc<spectral::Core>, lab_scan: bool },
 }
 
 impl Engine {
@@ -451,7 +454,13 @@ impl Engine {
     fn finish(&self, s: [f32; 3]) -> [f32; 3] {
         match self {
             Self::Matrix { .. } => s,
-            Self::Spectral { core, .. } => core.view(s).map(|v| -v.max(1e-6).log10()),
+            Self::Spectral { core, lab_scan, .. } => {
+                let rgb = match (&core.lab_scan, lab_scan) {
+                    (Some(scanner), true) => scanner.rgb(s),
+                    _ => core.view(s),
+                };
+                rgb.map(|v| -v.max(1e-6).log10())
+            }
         }
     }
 }
@@ -466,8 +475,10 @@ impl FilmModel {
             let log_h_ref = p.exposure.log_h_ref.context("a spectral preset needs exposure.log_h_ref")?;
             let core = spectral::Core::get(process, ds, p.print.as_ref(), log_h_ref)?;
             let develop = [0, 1, 2].map(|ch| Lut::from_fn(LOG_E_MIN, LOG_E_MAX, |x| core.develop.eval(ch, x)));
-            if process == Process::Negative {
-                // A print is looked at, not projected.
+            // A negative is lab-scanned (the default) or printed; either is
+            // looked at, not projected. A slide has no print.
+            let lab_scan = process == Process::Negative && output != OutputMode::Print;
+            if process == Process::Negative || output == OutputMode::Print {
                 output = OutputMode::Scan;
             }
             // Film sharpness is a size on the film: convert with this camera's pitch.
@@ -476,7 +487,7 @@ impl FilmModel {
             // The grey card lands on the datasheet's reference exposure.
             let offset = log_h_ref - p.exposure.grey_linear.log10() + ev;
             let to_layers = core.to_layers;
-            (Engine::Spectral { develop, core }, to_layers, log_h_ref, offset)
+            (Engine::Spectral { develop, core, lab_scan }, to_layers, log_h_ref, offset)
         } else {
             let c = p.curves.as_ref().context("preset needs [curves]")?;
             let dyes = p.dyes.as_ref().context("preset needs [dyes]")?;
@@ -688,7 +699,7 @@ impl FilmModel {
             dens.par_iter_mut().for_each(|d| *d = self.engine.finish(*d));
         }
         let pixels = match self.output {
-            OutputMode::Scan => dens.par_iter().map(|&d| self.scan(d)).collect(),
+            OutputMode::Scan | OutputMode::Print => dens.par_iter().map(|&d| self.scan(d)).collect(),
             OutputMode::Projection => {
                 let (fw, fh) = (frame.stride.max(1) as f32, frame.height.max(1) as f32);
                 dens.par_iter()

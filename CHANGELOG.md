@@ -7,6 +7,11 @@
   Ektachrome and Kodachrome whites reach white instead of stopping at a dull light grey, and the top
   stop keeps more separation. Mid-tones are unchanged. Turn off **Fit camera highlights to film**
   (or pass `--no-fit` to the CLI) for the Kodak datasheet curve exactly as published.
+- **Portra 400 is now shown as a lab scan of the negative** by default, the way most people see
+  Portra today: a minilab scanner reads the negative above its orange mask, grey-balances it and
+  applies a soft tone curve, so the negative's long highlight latitude survives. The optical print
+  on Endura Premier is still there: choose **Optical print on Endura Premier** in the Output menu
+  (CLI: `--print`).
 
 ## 0.1.0-alpha.5
 
