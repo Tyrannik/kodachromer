@@ -19,8 +19,11 @@ Film data: the Kodachrome 64 characteristic and spectral dye-density curves in
 presets/kodachrome64.toml were digitised from Kodak publication E-55 (06/2009) for emulation.
 The Ektachrome E100 data in presets/ektachrome-e100.toml were digitised from Kodak publication
 E-4000, and the Portra 400 and Endura Premier paper data in presets/portra400.toml from Kodak
-publications E-4050 and E-4070. Colorimetric tables in crates/remjet-core/src/cie.rs are from
-CIE 015:2018 and ISO 5-3:1995. Kodachrome, Ektachrome, Portra, Endura and Kodak are trademarks of Eastman Kodak Company; this project is not affiliated
+publications E-4050 and E-4070. The Ektar 100, Gold 200 and Ultramax 400 data in
+presets/ektar100.toml, presets/gold200.toml and presets/ultramax400.toml were digitised from
+Kodak publications E-4046, E-7022 and E-7023 (their paper data is the E-4070 set). The Tri-X 400 data in presets/trix400.toml were digitised
+from Kodak publication F-4017. Colorimetric tables in crates/remjet-core/src/cie.rs are from
+CIE 015:2018 and ISO 5-3:1995. Kodachrome, Ektachrome, Portra, Ektar, Gold, Ultramax, Tri-X, Endura and Kodak are trademarks of Eastman Kodak Company; this project is not affiliated
 with or endorsed by Kodak or Leica.
 
 ## Crates (263)

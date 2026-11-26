@@ -12,11 +12,32 @@
 - **Fix:** opening **Tune** no longer marks the film as changed. The sliders snapped some values to
   their step just by being shown (Kodachrome's 0.003 screen black became 0), so saving changed
   the film without you touching it.
+- **First black-and-white film: Tri-X 400.** A new black-and-white model built from Kodak
+  publication F-4017: the 400TX characteristic curve for D-76 (8 minutes, Kodak's contrast aim),
+  the film's panchromatic spectral sensitivity, its MTF and its published rms granularity of 17.
+  One silver image, so the result is exactly neutral and the grain has no colour. Kodak publishes
+  no paper for it, so it is shown as a lab scan of the negative; the scanner colour sliders work
+  as toning.
+
+## 0.1.0-alpha.6
+
+- **Three new colour negatives: Ektar 100, Gold 200 and Ultramax 400.** Each is built from its own
+  Kodak datasheet (E-4046, E-7022, E-7023) the same way as Portra 400: characteristic curves,
+  layer sensitivities and the negative's measured spectra, digitised from the PDFs' vector plots.
+  Like Portra they are shown as a lab scan by default, or as an optical print on Endura Premier
+  paper (E-4070). Ektar uses its published MTF for film sharpness; Kodak
+  publishes none for Gold or Ultramax. Grain strengths are estimates from Kodak's Print Grain Index.
+  All three use the camera-to-film highlight fit.
 - **Highlights fitted to each film.** The camera's brightest recorded tone (about three stops over
   mid-grey on the M9) now lands on the film's white, with a smooth shoulder from one stop over grey.
   Ektachrome and Kodachrome whites reach white instead of stopping at a dull light grey, and the top
   stop keeps more separation. Mid-tones are unchanged. Turn off **Fit camera highlights to film**
   (or pass `--no-fit` to the CLI) for the Kodak datasheet curve exactly as published.
+- **Portra 400 is now shown as a lab scan of the negative** by default, the way most people see
+  Portra today: a minilab scanner reads the negative above its orange mask, grey-balances it and
+  applies a soft tone curve, so the negative's long highlight latitude survives. The optical print
+  on Endura Premier is still there: choose **Optical print on Endura Premier** in the Output menu
+  (CLI: `--print`).
 
 ## 0.1.0-alpha.5
 

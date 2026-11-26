@@ -1086,29 +1086,47 @@ impl FilmApp {
                 ui.selectable_value(&mut self.edit.preset, None, "None (neutral)");
             });
         });
-        // Colour negatives are always shown as a print on their paper.
-        let print = self.edit.preset.as_deref().and_then(|id| presets::load(id).ok()).filter(|p| p.is_negative()).and_then(|p| p.print);
-        if let Some(paper) = print {
-            row_info(ui, "Output", Some("Colour negatives are always shown as an optical print: the negative exposes the paper through its own curves and dyes, from Kodak's data."), |ui| {
-                ui.label(format!("Print on {}", paper.name))
-                    .on_hover_text("Colour negatives are printed through the paper's own curves and dyes from Kodak's data.");
-            });
-        } else {
-            ui.add_enabled_ui(self.edit.preset.is_some(), |ui| {
-                let label = |m: OutputMode| match m {
-                    OutputMode::Scan => "Scanned slide",
-                    OutputMode::Projection => "Projected slide",
-                };
-                row_info(ui, "Output", Some(OUTPUT_INFO), |ui| {
-                    egui::ComboBox::from_id_salt("output").width(ui.available_width()).selected_text(label(self.edit.output)).show_ui(ui, |ui| {
+        // Colour negatives are lab-scanned or printed on their paper; slides
+        // are scanned or projected.
+        let loaded = self.edit.preset.as_deref().and_then(|id| presets::load(id).ok());
+        let mono = loaded.as_ref().is_some_and(|p| p.is_monochrome());
+        let print = loaded.filter(|p| p.is_negative()).and_then(|p| p.print);
+        ui.add_enabled_ui(self.edit.preset.is_some(), |ui| {
+            let negative = print.is_some() || mono;
+            let paper = print.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+            let label = |m: OutputMode| match (negative, m) {
+                (true, OutputMode::Print) if !mono => format!("Optical print on {paper}"),
+                (true, _) => "Lab scan of the negative".to_string(),
+                (false, OutputMode::Projection) => "Projected slide".to_string(),
+                (false, _) => "Scanned slide".to_string(),
+            };
+            let info = if mono {
+                OUTPUT_INFO_MONO
+            } else if negative {
+                OUTPUT_INFO_NEGATIVE
+            } else {
+                OUTPUT_INFO
+            };
+            row_info(ui, "Output", Some(info), |ui| {
+                egui::ComboBox::from_id_salt("output").width(ui.available_width()).selected_text(label(self.edit.output)).show_ui(ui, |ui| {
+                    if mono {
+                        // Black-and-white: Kodak publishes no paper data to print on.
+                        ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
+                            .on_hover_text("As a lab scanner reads the negative: soft, with the negative's long highlight latitude.");
+                    } else if negative {
+                        ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
+                            .on_hover_text("As a minilab scanner reads the negative: soft, with the negative's long highlight latitude.");
+                        ui.selectable_value(&mut self.edit.output, OutputMode::Print, label(OutputMode::Print))
+                            .on_hover_text("Printed through the paper's own curves and dyes from Kodak's data: richer colour, shorter highlights.");
+                    } else {
                         ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
                             .on_hover_text("As a film scanner reads the slide: open shadows, scanner balance.");
                         ui.selectable_value(&mut self.edit.output, OutputMode::Projection, label(OutputMode::Projection))
                             .on_hover_text("As the slide looks projected: full density range, deep blacks, warm lamp, soft corner falloff.");
-                    });
+                    }
                 });
             });
-        }
+        });
 
         theme::section(ui, "Adjust");
         let d = Edit::default();
@@ -1233,28 +1251,32 @@ impl FilmApp {
                 w.exposure.grey_linear = (grey * 1e5).round() / 1e5;
             }
             slider64(ui, &mut w.look.contrast, 0.7..=1.4, "Contrast", r.look.contrast, Some("Steepness of the film's tone curve around mid-grey. Above 1 is more contrasty than Kodak's data, below 1 flatter."));
-            slider64(ui, &mut w.look.interimage, 0.0..=0.6, "Saturation", r.look.interimage, Some("How strongly the film's colour layers hold each other back (interimage effect). This is what gives slide film its dense, saturated colour. 0 turns it off."));
-            slider64(ui, &mut w.scan.gamma, 0.8..=1.6, "Shadow lift", r.scan.gamma, Some("The scanner software's gamma. Above 1 opens up shadows the way scanning software does; 1 is the slide's raw transmittance."));
+            let mono = w.is_monochrome();
+            if !mono {
+                slider64(ui, &mut w.look.interimage, 0.0..=0.6, "Saturation", r.look.interimage, Some("How strongly the film's colour layers hold each other back (interimage effect). This is what gives slide film its dense, saturated colour. 0 turns it off."));
+            }
+            slider64(ui, &mut w.scan.gamma, 0.8..=1.6, "Shadow lift", r.scan.gamma, Some("The scanner software's gamma. Above 1 opens up shadows the way scanning software does; 1 is the film's raw transmittance."));
             slider64(ui, &mut w.scan.black_density, 2.4..=3.8, "Black depth", r.scan.black_density, Some("The film density the scanner reads as pure black. Higher keeps detail in deep shadows but greyer blacks; lower crushes them to black sooner."));
             let negative = w.is_negative();
-            subhead_info(
-                ui,
-                if negative { "Print colour" } else { "Scanner colour" },
-                if negative {
-                    "Colour balance of the printing light, per channel. Above 1 adds that colour to the print."
-                } else {
-                    "Colour balance the scanner applies, per channel. Above 1 adds that colour to the scan. Only affects Scanned slide output."
-                },
-            );
+            let (colour_title, colour_info) = if mono {
+                ("Toning", "Tints the black-and-white image, per channel. Above 1 adds that colour; all three at 1 is neutral grey.")
+            } else if negative {
+                ("Print / scan colour", "Colour balance of the scan or the printing light, per channel. Above 1 adds that colour.")
+            } else {
+                ("Scanner colour", "Colour balance the scanner applies, per channel. Above 1 adds that colour to the scan. Only affects Scanned slide output.")
+            };
+            subhead_info(ui, colour_title, colour_info);
             slider64(ui, &mut w.scan.white_balance[0], 0.85..=1.15, "Red", r.scan.white_balance[0], None);
             slider64(ui, &mut w.scan.white_balance[1], 0.85..=1.15, "Green", r.scan.white_balance[1], None);
             slider64(ui, &mut w.scan.white_balance[2], 0.85..=1.15, "Blue", r.scan.white_balance[2], None);
             subhead(ui, "Grain");
             slider64(ui, &mut w.grain.amount, 0.0..=1.2, "Strength", r.grain.amount, None);
-            let mut colour = 1.0 - w.grain.correlation;
-            slider64(ui, &mut colour, 0.0..=1.0, "Colour grain", 1.0 - r.grain.correlation, Some("How much each colour layer's grain differs from the others. 0 is grain in brightness only; higher adds coloured speckle."));
-            w.grain.correlation = 1.0 - colour;
-            if !negative {
+            if !mono {
+                let mut colour = 1.0 - w.grain.correlation;
+                slider64(ui, &mut colour, 0.0..=1.0, "Colour grain", 1.0 - r.grain.correlation, Some("How much each colour layer's grain differs from the others. 0 is grain in brightness only; higher adds coloured speckle."));
+                w.grain.correlation = 1.0 - colour;
+            }
+            if !negative && !mono {
                 subhead_info(ui, "Projection", "How the slide looks on a screen. Only affects Projected slide output.");
                 slider64(ui, &mut w.projection.flare, 0.0..=0.02, "Screen black", r.projection.flare, Some("Light from the room and screen that lands on the darkest parts of the picture, as a fraction of white. It sets how black a projected slide can get: 0.003 is about 330:1."));
                 slider64(ui, &mut w.projection.falloff_stops, 0.0..=1.5, "Corner falloff", r.projection.falloff_stops, Some("How much darker the projector makes the corners than the centre, in stops."));
@@ -1677,6 +1699,12 @@ fn subhead_info(ui: &mut egui::Ui, text: &str, info: &str) {
         theme::info(ui, info);
     });
 }
+
+const OUTPUT_INFO_NEGATIVE: &str = "How the negative is turned into a picture. \
+    Lab scan: as a minilab scanner reads it, soft and with the negative's long highlight latitude. \
+    Optical print: printed on Kodak paper through its own curves and dyes, with richer colour and shorter highlights.";
+
+const OUTPUT_INFO_MONO: &str = "Black-and-white negatives are shown as a lab scan. Kodak publishes no paper data to print them on.";
 
 const OUTPUT_INFO: &str = "How the slide is turned into a picture. \
     Scanned slide: as a film scanner reads it, with open shadows and the scanner's colour balance. \
