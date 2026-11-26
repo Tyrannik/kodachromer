@@ -22,6 +22,8 @@ use image::RgbImage;
 use rawler::decoders::Orientation;
 use serde::{Deserialize, Serialize};
 
+mod theme;
+
 const PREVIEW_EDGE: usize = 1800;
 const THUMB_EDGE: usize = 240;
 
@@ -518,6 +520,7 @@ impl FilmApp {
         if let Some(rs) = &cc.wgpu_render_state {
             rs.device.on_uncaptured_error(Arc::new(|err| eprintln!("GPU error ignored: {err}")));
         }
+        theme::install(&cc.egui_ctx);
         let (preview_tx, preview_rx) = spawn_preview_worker(cc.egui_ctx.clone());
         let (thumb_tx, thumb_rx) = channel();
         let settings = Settings::load();
@@ -961,7 +964,7 @@ impl FilmApp {
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("📂 Open folder…").clicked() {
+            if ui.button("Open folder…").clicked() {
                 let mut dialog = rfd::FileDialog::new();
                 if let Some(f) = &self.folder {
                     dialog = dialog.set_directory(f);
@@ -971,23 +974,23 @@ impl FilmApp {
                     self.open_folder(&ctx, folder);
                 }
             }
-            if ui.button("🖼 Reference…").on_hover_text("Show a reference image (e.g. a real K64 scan) beside the preview").clicked() {
+            if ui.button("Reference…").on_hover_text("Show a reference image (e.g. a real K64 scan) beside the preview").clicked() {
                 let ctx = ui.ctx().clone();
                 self.pick_reference(&ctx);
             }
-            if self.reference.is_some() && ui.button("✕ Hide reference").clicked() {
+            if self.reference.is_some() && ui.button("Hide reference").clicked() {
                 self.reference = None;
             }
             ui.separator();
             if self.rendering {
                 ui.spinner();
             }
-            ui.label(&self.status);
+            ui.label(egui::RichText::new(&self.status).color(theme::TEXT_WEAK));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("About").clicked() {
                     self.show_about = !self.show_about;
                 }
-                ui.label(egui::RichText::new(format!("v{VERSION}")).small().weak());
+                ui.label(egui::RichText::new(format!("Remjet {VERSION}")).small().color(theme::TEXT_WEAK));
             });
         });
         let mut open = self.show_about;
@@ -1013,62 +1016,47 @@ impl FilmApp {
     }
 
     fn library(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading("Library");
-            if self.selection.len() > 1 {
-                ui.label(egui::RichText::new(format!("{} selected", self.selection.len())).weak());
+        egui::Frame::new().inner_margin(egui::Margin { left: 14, right: 14, top: 10, bottom: 6 }).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Library");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let count = if self.selection.len() > 1 {
+                        format!("{} of {} selected", self.selection.len(), self.files.len())
+                    } else {
+                        format!("{} frames", self.files.len())
+                    };
+                    ui.label(egui::RichText::new(count).small().color(theme::TEXT_WEAK));
+                });
+            });
+            theme::hint(ui, "Ctrl- or Shift-click to select several");
+            if !self.camera_warnings.is_empty() {
+                let n = self.camera_warnings.len();
+                ui.label(egui::RichText::new(format!("⚠ {n} not from a Leica M9")).small().color(theme::WARN)).on_hover_text(
+                    "Remjet's film looks were tuned on Leica M9 files. Files from other cameras still open, with grain and halation scaled to their sensor, but colours may differ.",
+                );
             }
         });
-        ui.label(egui::RichText::new("Ctrl/Shift-click to select several").small().weak());
-        if !self.camera_warnings.is_empty() {
-            let n = self.camera_warnings.len();
-            ui.label(egui::RichText::new(format!("⚠ {n} not from a Leica M9")).small().color(ui.visuals().warn_fg_color)).on_hover_text(
-                "Remjet's film looks were tuned on Leica M9 files. Files from other cameras still open, with grain and halation scaled to their sensor, but colours may differ.",
-            );
-        }
-        ui.add_space(4.0);
         let mut clicked = None;
         let nav = ui.input(|i| i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight));
         egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             for (i, path) in self.files.iter().enumerate() {
-                let focused = self.selected == Some(i);
-                let in_sel = self.selection.contains(&i);
-                let fill = if focused {
-                    ui.visuals().selection.bg_fill
-                } else if in_sel {
-                    ui.visuals().selection.bg_fill.gamma_multiply(0.45)
-                } else {
-                    egui::Color32::TRANSPARENT
-                };
-                let resp = egui::Frame::new()
-                    .inner_margin(4.0)
-                    .corner_radius(4.0)
-                    .fill(fill)
-                    .show(ui, |ui| {
-                        let width = ui.available_width().min(THUMB_EDGE as f32);
-                        match self.thumbs.get(path) {
-                            Some(tex) => {
-                                let s = tex.size_vec2();
-                                ui.add(egui::Image::new((tex.id(), egui::vec2(width, width * s.y / s.x))));
-                            }
-                            None => {
-                                ui.add_sized([width, width * 0.66], egui::Spinner::new());
-                            }
-                        }
-                        let mark = if self.edited.contains(path) { " ●" } else { "" };
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(format!("{}{mark}", file_name(path)));
-                            if let Some(w) = self.camera_warnings.get(path) {
-                                ui.label(egui::RichText::new("⚠ not M9").small().color(ui.visuals().warn_fg_color)).on_hover_text(w);
-                            }
-                        });
-                    })
-                    .response
-                    .interact(egui::Sense::click());
+                let resp = film_frame(
+                    ui,
+                    i,
+                    path,
+                    self.thumbs.get(path),
+                    FrameState {
+                        focused: self.selected == Some(i),
+                        selected: self.selection.contains(&i),
+                        edited: self.edited.contains(path),
+                        warning: self.camera_warnings.get(path).map(String::as_str),
+                    },
+                );
                 if resp.clicked() {
                     clicked = Some((i, ui.input(|inp| inp.modifiers)));
                 }
-                if focused && nav {
+                if self.selected == Some(i) && nav {
                     resp.scroll_to_me(None);
                 }
             }
@@ -1080,22 +1068,23 @@ impl FilmApp {
 
     fn edit_panel(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        ui.heading("Edit");
+        theme::section(ui, "Film");
         if self.selected.is_none() {
-            ui.label("No image selected.");
+            theme::hint(ui, "Choose a frame in the library to edit it.");
             return;
         }
-        ui.add_space(6.0);
 
         let current = match &self.edit.preset {
             None => "None (neutral)".to_string(),
             Some(id) => self.preset_list.iter().find(|(i, _)| i == id).map_or(format!("{id} (missing)"), |p| p.1.clone()),
         };
-        egui::ComboBox::from_label("Film").selected_text(current).show_ui(ui, |ui| {
-            for (id, name) in &self.preset_list {
-                ui.selectable_value(&mut self.edit.preset, Some(id.clone()), name);
-            }
-            ui.selectable_value(&mut self.edit.preset, None, "None (neutral)");
+        row(ui, "Stock", |ui| {
+            egui::ComboBox::from_id_salt("film").width(ui.available_width()).selected_text(current).show_ui(ui, |ui| {
+                for (id, name) in &self.preset_list {
+                    ui.selectable_value(&mut self.edit.preset, Some(id.clone()), name);
+                }
+                ui.selectable_value(&mut self.edit.preset, None, "None (neutral)");
+            });
         });
         // Colour negatives are lab-scanned or printed on their paper; slides
         // are scanned or projected.
@@ -1111,97 +1100,120 @@ impl FilmApp {
                 (false, OutputMode::Projection) => "Projected slide".to_string(),
                 (false, _) => "Scanned slide".to_string(),
             };
-            egui::ComboBox::from_label("Output").selected_text(label(self.edit.output)).show_ui(ui, |ui| {
-                if mono {
-                    // Black-and-white: Kodak publishes no paper data to print on.
-                    ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
-                        .on_hover_text("As a lab scanner reads the negative: soft, with the negative's long highlight latitude.");
-                } else if negative {
-                    ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
-                        .on_hover_text("As a minilab scanner reads the negative: soft, with the negative's long highlight latitude.");
-                    ui.selectable_value(&mut self.edit.output, OutputMode::Print, label(OutputMode::Print))
-                        .on_hover_text("Printed through the paper's own curves and dyes from Kodak's data: richer colour, shorter highlights.");
-                } else {
-                    ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
-                        .on_hover_text("As a film scanner reads the slide: open shadows, scanner balance.");
-                    ui.selectable_value(&mut self.edit.output, OutputMode::Projection, label(OutputMode::Projection))
-                        .on_hover_text("As the slide looks projected: full density range, deep blacks, warm lamp, soft corner falloff.");
-                }
+            let info = if mono {
+                OUTPUT_INFO_MONO
+            } else if negative {
+                OUTPUT_INFO_NEGATIVE
+            } else {
+                OUTPUT_INFO
+            };
+            row_info(ui, "Output", Some(info), |ui| {
+                egui::ComboBox::from_id_salt("output").width(ui.available_width()).selected_text(label(self.edit.output)).show_ui(ui, |ui| {
+                    if mono {
+                        // Black-and-white: Kodak publishes no paper data to print on.
+                        ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
+                            .on_hover_text("As a lab scanner reads the negative: soft, with the negative's long highlight latitude.");
+                    } else if negative {
+                        ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
+                            .on_hover_text("As a minilab scanner reads the negative: soft, with the negative's long highlight latitude.");
+                        ui.selectable_value(&mut self.edit.output, OutputMode::Print, label(OutputMode::Print))
+                            .on_hover_text("Printed through the paper's own curves and dyes from Kodak's data: richer colour, shorter highlights.");
+                    } else {
+                        ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
+                            .on_hover_text("As a film scanner reads the slide: open shadows, scanner balance.");
+                        ui.selectable_value(&mut self.edit.output, OutputMode::Projection, label(OutputMode::Projection))
+                            .on_hover_text("As the slide looks projected: full density range, deep blacks, warm lamp, soft corner falloff.");
+                    }
+                });
             });
         });
-        ui.add_space(8.0);
 
-        ui.spacing_mut().slider_width = 160.0;
+        theme::section(ui, "Adjust");
         let d = Edit::default();
         let film = self.edit.preset.is_some();
         let e = &mut self.edit;
-        slider(ui, true, &mut e.exposure_ev, -2.0..=2.0, 0.05, "Exposure (EV)", d.exposure_ev);
-        slider(ui, true, &mut e.warmth, -1.0..=1.0, 0.01, "Warmth", d.warmth);
-        slider(ui, true, &mut e.tint, -1.0..=1.0, 0.01, "Tint", d.tint);
-        slider(ui, film, &mut e.highlights, -1.0..=1.0, 0.01, "Highlights", d.highlights);
-        ui.add_enabled(film, egui::Checkbox::new(&mut e.fit_highlights, "Fit camera highlights to film")).on_hover_text(
-            "On: the camera's brightest recorded tone lands on the film's white, so highlights keep their detail. \
-             Off: the Kodak datasheet curve exactly as published.",
-        );
-        slider(ui, film, &mut e.halation, 0.0..=1.0, 0.01, "Halation", d.halation);
-        slider(ui, true, &mut e.sharpen, 0.0..=1.0, 0.01, "Sharpen", d.sharpen);
-        slider(ui, film, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain);
-        slider(ui, film, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size);
-        ui.label(egui::RichText::new("Double-click a slider to reset it.").small().weak());
-        ui.add_space(6.0);
-
+        slider(ui, true, &mut e.exposure_ev, -2.0..=2.0, 0.05, "Exposure", d.exposure_ev, None);
+        slider(ui, true, &mut e.warmth, -1.0..=1.0, 0.01, "Warmth", d.warmth, None);
+        slider(ui, true, &mut e.tint, -1.0..=1.0, 0.01, "Tint", d.tint, None);
+        slider(ui, film, &mut e.highlights, -1.0..=1.0, 0.01, "Highlights", d.highlights, Some("How the film's highlights roll off. Left keeps more detail in bright areas; right makes them brighter, so they blow out sooner."));
         ui.horizontal(|ui| {
-            if ui.add_enabled(self.can_undo(), egui::Button::new("↶ Undo")).on_hover_text("Ctrl+Z").clicked() {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.add_enabled(film, egui::Checkbox::new(&mut e.fit_highlights, "Fit camera highlights to film"));
+            theme::info(
+                ui,
+                "A camera records about three stops above mid-grey before it clips, while the film's curve runs further. \
+                 On: the camera's brightest tone is placed on the film's white, so the top stop keeps its detail and whites look white. \
+                 Off: the Kodak datasheet curve exactly as published, which can leave the brightest tones a dull light grey.",
+            );
+        });
+        slider(ui, film, &mut e.halation, 0.0..=1.0, 0.01, "Halation", d.halation, Some("The red-orange glow film shows around bright lights, from light that passes through the film, reflects off its back and exposes it again. 0 is off."));
+        slider(ui, true, &mut e.sharpen, 0.0..=1.0, 0.01, "Sharpen", d.sharpen, Some("Detail sharpening like a film scanner's. It works on brightness only, so it doesn't add colour fringes."));
+        slider(ui, film, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain, None);
+        slider(ui, film, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size, Some("Size of the grain clumps, relative to the film's own. Grain is sized on the film, so it looks the same at any export size."));
+        theme::hint(ui, "Double-click a slider to reset it.");
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.add_enabled(self.can_undo(), egui::Button::new("Undo")).on_hover_text("Ctrl+Z").clicked() {
                 self.step_history(false);
             }
-            if ui.add_enabled(self.can_redo(), egui::Button::new("↷ Redo")).on_hover_text("Ctrl+Y or Ctrl+Shift+Z").clicked() {
+            if ui.add_enabled(self.can_redo(), egui::Button::new("Redo")).on_hover_text("Ctrl+Y or Ctrl+Shift+Z").clicked() {
                 self.step_history(true);
             }
-        });
-        ui.horizontal(|ui| {
             if ui.button("Reset all").on_hover_text("Back to the film's defaults; the image no longer counts as edited").clicked() {
                 self.edit = Edit::default();
                 self.save_if_changed();
                 self.show_toast("Reset all settings (Ctrl+Z to undo)".into());
             }
-            let before = ui.add(egui::Button::new("Hold for before").sense(egui::Sense::click_and_drag()));
-            if before.is_pointer_button_down_on() {
-                self.show_before = true;
-            }
-            let zoom_label = if self.zoom.is_some() { "Fit" } else { "100%" };
-            if ui.button(zoom_label).clicked() {
-                self.toggle_100();
-            }
         });
-        ui.label(
-            egui::RichText::new("Click the image for 100%, Ctrl+scroll to zoom (up to 800%), drag to pan, Esc to fit. Hold B to compare, ←/→ to move.")
-                .small()
-                .weak(),
-        );
 
-        ui.add_space(10.0);
-        ui.separator();
+        ui.add_space(6.0);
         self.tune_section(ui);
 
-        ui.add_space(10.0);
-        ui.separator();
-        ui.heading("Settings");
+        theme::section(ui, "Copy settings");
         ui.horizontal(|ui| {
             if ui.button("Copy").on_hover_text("Ctrl+C").clicked() {
                 self.copy_settings(&ctx);
             }
             let n = self.selection.len();
+            let target = if n == 1 { "Paste to this frame".to_string() } else { format!("Paste to {n} selected") };
             let paste = ui
-                .add_enabled(self.clipboard.is_some(), egui::Button::new(format!("Paste to {n} selected")))
-                .on_hover_text("Ctrl+V. Select images with Ctrl/Shift-click or Ctrl+A.");
+                .add_enabled(self.clipboard.is_some(), egui::Button::new(target))
+                .on_hover_text("Ctrl+V. Select frames with Ctrl/Shift-click or Ctrl+A.");
             if paste.clicked() {
                 self.paste_settings(&ctx, None);
             }
         });
 
-        ui.add_space(10.0);
-        ui.separator();
         self.export_section(ui);
+        ui.add_space(14.0);
+    }
+
+    /// The strip under the preview: compare and zoom, with their shortcuts.
+    fn view_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_centered(|ui| {
+            let enabled = self.selected.is_some();
+            ui.add_enabled_ui(enabled, |ui| {
+                let before = ui
+                    .add(egui::Button::new("Hold for before").selected(self.show_before).sense(egui::Sense::click_and_drag()))
+                    .on_hover_text("Or hold B: shows the frame without the film look");
+                if before.is_pointer_button_down_on() {
+                    self.show_before = true;
+                }
+                let fit = self.zoom.is_none();
+                if ui.add(egui::Button::new("Fit").selected(fit)).on_hover_text("Esc").clicked() && !fit {
+                    self.zoom = None;
+                }
+                if ui.add(egui::Button::new("100%").selected(self.zoom.is_some_and(|z| (z.level - 1.0).abs() < 0.01))).on_hover_text("Z").clicked() {
+                    self.zoom = Some(View { level: 1.0, center: self.zoom.map_or([0.5, 0.5], |z| z.center) });
+                }
+            });
+            if let Some(z) = self.zoom {
+                ui.label(egui::RichText::new(format!("{:.0}%", z.level * 100.0)).color(theme::TEXT_WEAK));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new("Click the photo for 100%. Ctrl+scroll zooms, drag pans, ←/→ change frame.").small().color(theme::TEXT_WEAK));
+            });
+        });
     }
 
     /// Live tuning of the current film preset. Changes preview immediately and
@@ -1223,45 +1235,53 @@ impl FilmApp {
         let ctx = ui.ctx().clone();
         let tune = self.tune.as_mut().expect("loaded above");
         let dirty = tune.working != tune.saved;
-        let title = if dirty { format!("Tune look: {} •", tune.working.name) } else { format!("Tune look: {}", tune.working.name) };
+        let title = if dirty { format!("Tune {} (unsaved)", tune.working.name) } else { format!("Tune {}", tune.working.name) };
         let mut action = None;
-        egui::CollapsingHeader::new(egui::RichText::new(title).heading()).id_salt("tune").show(ui, |ui| {
-            ui.label(egui::RichText::new("Changes the film itself, for every image that uses it. Double-click a slider for the Kodak-data value.").small().weak());
+        egui::CollapsingHeader::new(egui::RichText::new(title).font(egui::FontId::new(19.0, theme::condensed()))).id_salt("tune").show_unindented(ui, |ui| {
+            // Unindented, so the tuning sliders share the Adjust label column.
+            theme::hint(ui, "Changes the film itself, for every image that uses it. Double-click a slider for the Kodak-data value.");
             let w = &mut tune.working;
             let r = tune.reference.clone().unwrap_or_else(|| tune.saved.clone());
             // Base brightness shown as EV relative to the reference grey.
             let before = -(w.exposure.grey_linear / r.exposure.grey_linear).log2() as f32;
             let mut bright = before;
-            slider(ui, true, &mut bright, -1.0..=1.0, 0.05, "Brightness (EV)", 0.0);
+            slider(ui, true, &mut bright, -1.0..=1.0, 0.01, "Brightness", 0.0, Some("Which camera brightness the film treats as a mid-grey card, in stops from the Kodak value. Unlike Exposure, it changes the film for every image."));
             if (bright - before).abs() > 1e-6 {
                 let grey = r.exposure.grey_linear * 2f64.powf(-bright as f64);
                 w.exposure.grey_linear = (grey * 1e5).round() / 1e5;
             }
-            slider64(ui, &mut w.look.contrast, 0.7..=1.4, "Contrast", r.look.contrast);
+            slider64(ui, &mut w.look.contrast, 0.7..=1.4, "Contrast", r.look.contrast, Some("Steepness of the film's tone curve around mid-grey. Above 1 is more contrasty than Kodak's data, below 1 flatter."));
             let mono = w.is_monochrome();
             if !mono {
-                slider64(ui, &mut w.look.interimage, 0.0..=0.6, "Saturation", r.look.interimage);
+                slider64(ui, &mut w.look.interimage, 0.0..=0.6, "Saturation", r.look.interimage, Some("How strongly the film's colour layers hold each other back (interimage effect). This is what gives slide film its dense, saturated colour. 0 turns it off."));
             }
-            slider64(ui, &mut w.scan.gamma, 0.8..=1.6, "Shadow lift", r.scan.gamma);
-            slider64(ui, &mut w.scan.black_density, 2.4..=3.8, "Black depth", r.scan.black_density);
+            slider64(ui, &mut w.scan.gamma, 0.8..=1.6, "Shadow lift", r.scan.gamma, Some("The scanner software's gamma. Above 1 opens up shadows the way scanning software does; 1 is the film's raw transmittance."));
+            slider64(ui, &mut w.scan.black_density, 2.4..=3.8, "Black depth", r.scan.black_density, Some("The film density the scanner reads as pure black. Higher keeps detail in deep shadows but greyer blacks; lower crushes them to black sooner."));
             let negative = w.is_negative();
-            ui.label(egui::RichText::new(if mono { "Toning (red / green / blue)" } else if negative { "Print / scan colour" } else { "Scanner colour" }).small());
-            slider64(ui, &mut w.scan.white_balance[0], 0.85..=1.15, "Red", r.scan.white_balance[0]);
-            slider64(ui, &mut w.scan.white_balance[1], 0.85..=1.15, "Green", r.scan.white_balance[1]);
-            slider64(ui, &mut w.scan.white_balance[2], 0.85..=1.15, "Blue", r.scan.white_balance[2]);
-            ui.label(egui::RichText::new("Grain").small());
-            slider64(ui, &mut w.grain.amount, 0.0..=1.2, "Strength", r.grain.amount);
+            let (colour_title, colour_info) = if mono {
+                ("Toning", "Tints the black-and-white image, per channel. Above 1 adds that colour; all three at 1 is neutral grey.")
+            } else if negative {
+                ("Print / scan colour", "Colour balance of the scan or the printing light, per channel. Above 1 adds that colour.")
+            } else {
+                ("Scanner colour", "Colour balance the scanner applies, per channel. Above 1 adds that colour to the scan. Only affects Scanned slide output.")
+            };
+            subhead_info(ui, colour_title, colour_info);
+            slider64(ui, &mut w.scan.white_balance[0], 0.85..=1.15, "Red", r.scan.white_balance[0], None);
+            slider64(ui, &mut w.scan.white_balance[1], 0.85..=1.15, "Green", r.scan.white_balance[1], None);
+            slider64(ui, &mut w.scan.white_balance[2], 0.85..=1.15, "Blue", r.scan.white_balance[2], None);
+            subhead(ui, "Grain");
+            slider64(ui, &mut w.grain.amount, 0.0..=1.2, "Strength", r.grain.amount, None);
             if !mono {
                 let mut colour = 1.0 - w.grain.correlation;
-                slider64(ui, &mut colour, 0.0..=1.0, "Colour grain", 1.0 - r.grain.correlation);
+                slider64(ui, &mut colour, 0.0..=1.0, "Colour grain", 1.0 - r.grain.correlation, Some("How much each colour layer's grain differs from the others. 0 is grain in brightness only; higher adds coloured speckle."));
                 w.grain.correlation = 1.0 - colour;
             }
             if !negative && !mono {
-                ui.label(egui::RichText::new("Projection (for Projected slide output)").small());
-                slider64(ui, &mut w.projection.flare, 0.0..=0.02, "Screen black", r.projection.flare);
-                slider64(ui, &mut w.projection.falloff_stops, 0.0..=1.5, "Corner falloff", r.projection.falloff_stops);
-                slider64(ui, &mut w.projection.white_balance[0], 0.85..=1.15, "Lamp red", r.projection.white_balance[0]);
-                slider64(ui, &mut w.projection.white_balance[2], 0.75..=1.15, "Lamp blue", r.projection.white_balance[2]);
+                subhead_info(ui, "Projection", "How the slide looks on a screen. Only affects Projected slide output.");
+                slider64(ui, &mut w.projection.flare, 0.0..=0.02, "Screen black", r.projection.flare, Some("Light from the room and screen that lands on the darkest parts of the picture, as a fraction of white. It sets how black a projected slide can get: 0.003 is about 330:1."));
+                slider64(ui, &mut w.projection.falloff_stops, 0.0..=1.5, "Corner falloff", r.projection.falloff_stops, Some("How much darker the projector makes the corners than the centre, in stops."));
+                slider64(ui, &mut w.projection.white_balance[0], 0.85..=1.15, "Lamp red", r.projection.white_balance[0], Some("Colour of the projector lamp. Tungsten lamps stay a little warm even after your eyes adapt."));
+                slider64(ui, &mut w.projection.white_balance[2], 0.75..=1.15, "Lamp blue", r.projection.white_balance[2], None);
             }
 
             ui.add_space(4.0);
@@ -1280,7 +1300,7 @@ impl FilmApp {
                 }
             });
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("New film name").desired_width(170.0));
+                ui.add(egui::TextEdit::singleline(&mut self.new_preset_name).hint_text("New film name").desired_width(ui.available_width() - 100.0));
                 if ui.add_enabled(!self.new_preset_name.trim().is_empty(), egui::Button::new("Save as new")).clicked() {
                     action = Some(TuneAction::SaveAs);
                 }
@@ -1359,26 +1379,35 @@ impl FilmApp {
 
     fn export_section(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        ui.heading("Export JPG");
+        theme::section(ui, "Export JPG");
         let opts = &mut self.settings.export;
         let size_label = SIZES.iter().find(|(s, _)| *s == opts.max_edge).map_or("Custom", |s| s.1);
-        egui::ComboBox::from_label("Size").selected_text(size_label).show_ui(ui, |ui| {
-            for (s, label) in SIZES {
-                ui.selectable_value(&mut opts.max_edge, *s, *label);
-            }
+        row(ui, "Size", |ui| {
+            egui::ComboBox::from_id_salt("size").width(ui.available_width()).selected_text(size_label).show_ui(ui, |ui| {
+                for (s, label) in SIZES {
+                    ui.selectable_value(&mut opts.max_edge, *s, *label);
+                }
+            });
         });
-        ui.add(egui::Slider::new(&mut opts.quality, 60..=100).text("Quality"));
-        ui.checkbox(&mut opts.keep_exif, "Keep camera metadata (EXIF)");
+        let mut q = opts.quality as f32;
+        slider(ui, true, &mut q, 60.0..=100.0, 1.0, "Quality", 92.0, None);
+        opts.quality = q.round() as _;
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.checkbox(&mut opts.keep_exif, "Keep camera metadata (EXIF)");
+            theme::info(ui, "Copies the date, camera, lens and exposure settings from the DNG into the JPG. Off writes no metadata.");
+        });
 
-        ui.horizontal(|ui| {
-            let dest = match (&self.settings.export_dir, &self.folder) {
-                (Some(d), _) => d.display().to_string(),
-                (None, Some(f)) => f.join("exports").display().to_string(),
-                _ => "—".into(),
-            };
-            ui.label(egui::RichText::new(format!("To: {dest}")).small());
+        let dest = match (&self.settings.export_dir, &self.folder) {
+            (Some(d), _) => d.display().to_string(),
+            (None, Some(f)) => f.join("exports").display().to_string(),
+            _ => "No folder open".into(),
+        };
+        row(ui, "Folder", |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(&dest).small().color(theme::TEXT_WEAK)).truncate()).on_hover_text(&dest);
         });
         ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
             if ui.button("Change folder…").clicked() {
                 if let Some(d) = rfd::FileDialog::new().pick_folder() {
                     self.settings.export_dir = Some(d);
@@ -1390,7 +1419,7 @@ impl FilmApp {
                 self.settings.save();
             }
         });
-        ui.add_space(6.0);
+        ui.add_space(4.0);
 
         if let Some(b) = &self.batch {
             let done = b.done.load(Ordering::SeqCst);
@@ -1406,19 +1435,22 @@ impl FilmApp {
         let edited: Vec<PathBuf> = self.files.iter().filter(|p| self.edited.contains(*p)).cloned().collect();
         let all = self.files.clone();
         let mut job = None;
-        ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(!current.is_empty(), egui::Button::new("This image")).clicked() {
-                job = Some(current);
+        // Two by two, equal widths: the export targets read as one set of choices.
+        let gap = ui.spacing().item_spacing.x;
+        let w = (ui.available_width() - gap) / 2.0;
+        let h = ui.spacing().interact_size.y + 4.0;
+        let mut target = |ui: &mut egui::Ui, files: Vec<PathBuf>, enabled: bool, label: String| {
+            if ui.add_enabled(enabled, egui::Button::new(label).min_size(egui::vec2(w, h))).clicked() {
+                job = Some(files);
             }
-            if ui.add_enabled(selected.len() > 1, egui::Button::new(format!("Selected ({})", selected.len()))).clicked() {
-                job = Some(selected);
-            }
-            if ui.add_enabled(!edited.is_empty(), egui::Button::new(format!("Edited ({})", edited.len()))).clicked() {
-                job = Some(edited);
-            }
-            if ui.add_enabled(!all.is_empty(), egui::Button::new(format!("All ({})", all.len()))).clicked() {
-                job = Some(all);
-            }
+        };
+        ui.horizontal(|ui| {
+            target(ui, current.clone(), !current.is_empty(), "This frame".into());
+            target(ui, selected.clone(), selected.len() > 1, format!("Selected ({})", selected.len()));
+        });
+        ui.horizontal(|ui| {
+            target(ui, edited.clone(), !edited.is_empty(), format!("Edited ({})", edited.len()));
+            target(ui, all.clone(), !all.is_empty(), format!("Whole folder ({})", all.len()));
         });
         if let Some(files) = job {
             self.start_export(&ctx, files);
@@ -1429,7 +1461,9 @@ impl FilmApp {
         let rect = ui.max_rect();
         let ppp = ui.ctx().pixels_per_point();
         if self.selected.is_none() {
-            ui.centered_and_justified(|ui| ui.label("Open a folder of raw files (📂 at the top left)."));
+            ui.centered_and_justified(|ui| {
+                ui.label(egui::RichText::new("Open a folder of DNGs to start: Open folder…, top left.").color(theme::TEXT_WEAK));
+            });
             return;
         }
 
@@ -1535,11 +1569,12 @@ impl FilmApp {
             }
         }
         if zoomed {
-            let label = format!("{:.0}%{}", view.level * 100.0, if self.show_before { " · BEFORE" } else { "" });
-            badge(ui, rect, &label);
+            if self.show_before {
+                badge(ui, rect, "Before");
+            }
         } else {
             if self.show_before {
-                badge(ui, rect, "BEFORE (neutral)");
+                badge(ui, rect, "Before");
             }
             if resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn);
@@ -1560,11 +1595,25 @@ impl eframe::App for FilmApp {
         self.poll_workers(&ctx);
         self.handle_keys(&ctx);
 
-        egui::Panel::top("top").show(ui, |ui| self.top_bar(ui));
-        egui::Panel::left("library").resizable(true).default_size(260.0).min_size(160.0).show(ui, |ui| self.library(ui));
-        egui::Panel::right("edit").resizable(false).exact_size(360.0).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.edit_panel(ui));
-        });
+        let line = egui::Stroke::new(1.0, theme::LINE);
+        let bar = egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 6)).stroke(line);
+        egui::Panel::top("top").frame(bar).show(ui, |ui| self.top_bar(ui));
+        egui::Panel::left("library")
+            .frame(egui::Frame::new().fill(theme::PANEL).stroke(line))
+            .resizable(true)
+            .default_size(280.0)
+            .min_size(180.0)
+            .show(ui, |ui| self.library(ui));
+        egui::Panel::right("edit")
+            .frame(egui::Frame::new().fill(theme::PANEL).stroke(line).inner_margin(egui::Margin { left: 16, right: 6, top: 0, bottom: 0 }))
+            .resizable(false)
+            .exact_size(360.0)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.set_width(ui.available_width() - 10.0);
+                    self.edit_panel(ui)
+                });
+            });
         if let Some((name, tex)) = &self.reference {
             let (name, tex) = (name.clone(), tex.clone());
             let avail = ui.available_width();
@@ -1576,7 +1625,12 @@ impl eframe::App for FilmApp {
                 ui.put(egui::Rect::from_center_size(rect.center(), s * scale), egui::Image::new((tex.id(), s * scale)));
             });
         }
-        egui::CentralPanel::default().show(ui, |ui| self.preview(ui));
+        egui::Panel::bottom("view").frame(egui::Frame::new().fill(theme::SURROUND).inner_margin(egui::Margin::symmetric(16, 8))).show(ui, |ui| {
+            self.view_bar(ui)
+        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::SURROUND).inner_margin(egui::Margin { left: 16, right: 16, top: 16, bottom: 4 }))
+            .show(ui, |ui| self.preview(ui));
         draw_toast(&ctx, &mut self.toast);
 
         // Save once the user lets go of a slider, and keep the preview current.
@@ -1601,19 +1655,98 @@ enum TuneAction {
     Delete,
 }
 
-fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str, default: f64) {
+/// Width of the label column in the edit panel.
+const LABEL_WIDTH: f32 = 104.0;
+
+/// A labelled row in the edit panel: label on the left, control filling the rest.
+fn row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    row_info(ui, label, None, add)
+}
+
+/// A labelled row with an optional (i) explanation beside the label.
+fn row_info<R>(ui: &mut egui::Ui, label: &str, info: Option<&str>, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        let h = ui.spacing().interact_size.y;
+        ui.allocate_ui_with_layout(egui::vec2(LABEL_WIDTH, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_width(LABEL_WIDTH);
+            ui.set_max_width(LABEL_WIDTH);
+            ui.label(egui::RichText::new(label).color(theme::TEXT_WEAK));
+            // The (i) sits at the column's right edge, so every row keeps
+            // the same slider start and the icons line up.
+            if let Some(text) = info {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(6.0);
+                    theme::info(ui, text);
+                });
+            }
+        });
+        add(ui)
+    })
+    .inner
+}
+
+/// A small heading for a group of sliders in the tuning section.
+fn subhead(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(text).font(egui::FontId::new(15.0, theme::condensed())).color(theme::TEXT_WEAK));
+}
+
+fn subhead_info(ui: &mut egui::Ui, text: &str, info: &str) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        ui.label(egui::RichText::new(text).font(egui::FontId::new(15.0, theme::condensed())).color(theme::TEXT_WEAK));
+        theme::info(ui, info);
+    });
+}
+
+const OUTPUT_INFO_NEGATIVE: &str = "How the negative is turned into a picture. \
+    Lab scan: as a minilab scanner reads it, soft and with the negative's long highlight latitude. \
+    Optical print: printed on Kodak paper through its own curves and dyes, with richer colour and shorter highlights.";
+
+const OUTPUT_INFO_MONO: &str = "Black-and-white negatives are shown as a lab scan. Kodak publishes no paper data to print them on.";
+
+const OUTPUT_INFO: &str = "How the slide is turned into a picture. \
+    Scanned slide: as a film scanner reads it, with open shadows and the scanner's colour balance. \
+    Projected slide: as it looks on a screen, with the film's full density range, deep blacks, a warm lamp and darker corners.";
+
+/// Tuning slider. `range` sets the span; the slider is centred on `default`
+/// (the Kodak-data value), so an untouched film shows every handle in the
+/// middle. Values that can't go negative keep their floor at zero.
+fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str, default: f64, info: Option<&str>) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let half = (hi - lo) / 2.0;
+    let floor = if lo >= 0.0 { 0.0 } else { f64::NEG_INFINITY };
+    let round = |x: f64| (x * 1000.0).round() / 1000.0;
+    // Always include the current value: the slider clamps whatever it shows.
+    let lo = round((default - half).max(floor)).min(*value) as f32;
+    let hi = round(default + half).max(*value) as f32;
     let mut v = *value as f32;
-    let (lo, hi) = (*range.start() as f32, *range.end() as f32);
-    slider(ui, true, &mut v, lo..=hi, 0.01, text, default as f32);
+    // Fine steps: egui snaps the value to the step every frame, and a coarser
+    // step would quietly change a preset (e.g. a 0.003 flare) just by showing it.
+    slider(ui, true, &mut v, lo..=hi, 0.001, text, default as f32, info);
     if (v - *value as f32).abs() > 1e-6 {
         // Round so saved presets read cleanly (0.53, not 0.5299999713897705).
         *value = (v as f64 * 1000.0).round() / 1000.0;
     }
 }
 
-/// Slider that resets to `default` on double-click.
-fn slider(ui: &mut egui::Ui, enabled: bool, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f64, text: &str, default: f32) {
-    let resp = ui.add_enabled(enabled, egui::Slider::new(value, range).step_by(step).text(text));
+/// Labelled slider that resets to `default` on double-click.
+#[allow(clippy::too_many_arguments)]
+fn slider(ui: &mut egui::Ui, enabled: bool, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f64, text: &str, default: f32, info: Option<&str>) {
+    let resp = ui
+        .add_enabled_ui(enabled, |ui| {
+            row_info(ui, text, info, |ui| {
+                // One width for every value box, wide enough for "-1.000", so
+                // rails and boxes line up whatever the value's length.
+                const VALUE_BOX: f32 = 58.0;
+                ui.spacing_mut().interact_size.x = VALUE_BOX;
+                ui.spacing_mut().slider_width = (ui.available_width() - VALUE_BOX - ui.spacing().item_spacing.x).max(60.0);
+                let decimals = if step >= 1.0 { 0 } else if step < 0.01 { 3 } else { 2 };
+                ui.add(egui::Slider::new(value, range).step_by(step).fixed_decimals(decimals))
+            })
+        })
+        .inner;
     // egui sliders only sense drags, so detect the double-click from raw input.
     let (double, pos) = ui.input(|i| (i.pointer.button_double_clicked(egui::PointerButton::Primary), i.pointer.interact_pos()));
     if enabled && double && pos.is_some_and(|p| resp.rect.contains(p)) {
@@ -1622,6 +1755,94 @@ fn slider(ui: &mut egui::Ui, enabled: bool, value: &mut f32, range: std::ops::Ra
 }
 
 /// Draw the toast (if any) near the bottom of the window, fading out.
+/// How a library frame should be marked.
+struct FrameState<'a> {
+    focused: bool,
+    selected: bool,
+    edited: bool,
+    warning: Option<&'a str>,
+}
+
+/// One frame of the library's film strip: sprocket holes down both rebates,
+/// the thumbnail as the exposed frame, and the frame number and file name
+/// printed along the edge below it.
+fn film_frame(ui: &mut egui::Ui, index: usize, path: &Path, thumb: Option<&egui::TextureHandle>, st: FrameState) -> egui::Response {
+    const REBATE: f32 = 22.0;
+    const PITCH: f32 = 14.0; // sprocket hole spacing
+    const PRINT: f32 = 26.0; // edge-print band under each frame
+    let width = ui.available_width();
+    let image_w = (width - 2.0 * REBATE).max(40.0);
+    // Whole number of hole pitches per frame, so the holes run on unbroken.
+    let height = ((image_w * 2.0 / 3.0 + PRINT + 6.0) / PITCH).ceil() * PITCH;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, theme::FILM_BASE);
+    for x in [rect.left() + REBATE / 2.0, rect.right() - REBATE / 2.0] {
+        let mut y = rect.top() + PITCH / 2.0;
+        while y < rect.bottom() {
+            painter.rect_filled(egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(8.0, 9.0)), 2.0, theme::SURROUND);
+            y += PITCH;
+        }
+    }
+
+    let frame = egui::Rect::from_min_size(rect.left_top() + egui::vec2(REBATE, 6.0), egui::vec2(image_w, image_w * 2.0 / 3.0));
+    match thumb {
+        Some(tex) => {
+            let s = tex.size_vec2();
+            let scale = (frame.width() / s.x).min(frame.height() / s.y);
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            painter.image(tex.id(), egui::Rect::from_center_size(frame.center(), s * scale), uv, egui::Color32::WHITE);
+        }
+        None => egui::Spinner::new().size(18.0).color(theme::TEXT_WEAK).paint_at(ui, egui::Rect::from_center_size(frame.center(), egui::vec2(18.0, 18.0))),
+    }
+    let marker = if st.focused {
+        Some(egui::Stroke::new(2.0, theme::EDGE_PRINT))
+    } else if st.selected {
+        Some(egui::Stroke::new(1.5, theme::EDGE_PRINT.gamma_multiply(0.6)))
+    } else if resp.hovered() {
+        Some(egui::Stroke::new(1.0, egui::Color32::from_gray(150)))
+    } else {
+        None
+    };
+    if let Some(stroke) = marker {
+        painter.rect_stroke(frame.expand(2.0), 1.0, stroke, egui::StrokeKind::Outside);
+    }
+
+    // Edge print.
+    let y = frame.bottom() + PRINT / 2.0 + 1.0;
+    let number = painter.text(
+        egui::pos2(frame.left(), y),
+        egui::Align2::LEFT_CENTER,
+        format!("▸{}", index + 1),
+        egui::FontId::new(14.0, theme::condensed()),
+        if st.focused || st.selected { theme::EDGE_PRINT } else { theme::EDGE_PRINT.gamma_multiply(0.65) },
+    );
+    painter.text(
+        egui::pos2(number.right() + 8.0, y),
+        egui::Align2::LEFT_CENTER,
+        file_name(path),
+        egui::FontId::proportional(12.5),
+        if st.focused { theme::TEXT } else { theme::TEXT_WEAK },
+    );
+    let mut right = frame.right();
+    if st.edited {
+        painter.circle_filled(egui::pos2(right - 3.0, y), 3.0, theme::EDGE_PRINT);
+        right -= 12.0;
+    }
+    if st.warning.is_some() {
+        painter.text(egui::pos2(right, y), egui::Align2::RIGHT_CENTER, "⚠ not M9", egui::FontId::proportional(11.5), theme::WARN);
+    }
+
+    let resp = if st.edited { resp.on_hover_text("Edited") } else { resp };
+    match st.warning {
+        Some(w) => resp.on_hover_text(w),
+        None => resp,
+    }
+}
+
 fn draw_toast(ctx: &egui::Context, toast: &mut Option<(String, std::time::Instant)>) {
     const SHOW: f32 = 2.6;
     const FADE: f32 = 0.5;
@@ -1638,30 +1859,39 @@ fn draw_toast(ctx: &egui::Context, toast: &mut Option<(String, std::time::Instan
         .interactable(false)
         .show(ctx, |ui| {
             ui.set_opacity(alpha);
-            egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
-                ui.label(egui::RichText::new(msg).size(15.0).strong());
-            });
+            egui::Frame::new()
+                .fill(egui::Color32::from_gray(230))
+                .corner_radius(3.0)
+                .inner_margin(egui::Margin::symmetric(16, 9))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(msg).size(15.0).color(egui::Color32::from_gray(20)));
+                });
         });
     ctx.request_repaint_after(std::time::Duration::from_millis(30));
 }
 
 fn badge(ui: &mut egui::Ui, rect: egui::Rect, text: &str) {
-    ui.put(
-        egui::Rect::from_min_size(rect.min + egui::vec2(10.0, 10.0), egui::vec2(160.0, 24.0)),
-        egui::Label::new(egui::RichText::new(text).strong().background_color(egui::Color32::from_black_alpha(160))),
-    );
-}
-
-/// Persistent warning across the top of the preview (below the zoom badge).
-fn camera_banner(ui: &mut egui::Ui, rect: egui::Rect, warning: &str) {
-    let area = egui::Rect::from_min_max(rect.left_top() + egui::vec2(10.0, 42.0), egui::pos2(rect.right() - 10.0, rect.bottom()));
-    let mut banner = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
+    let area = egui::Rect::from_min_size(rect.min + egui::vec2(12.0, 12.0), egui::vec2(rect.width() - 24.0, 30.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::left_to_right(egui::Align::Min)));
     egui::Frame::new()
         .fill(egui::Color32::from_black_alpha(190))
-        .corner_radius(4.0)
+        .corner_radius(3.0)
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(&mut child, |ui| {
+            ui.label(egui::RichText::new(text).font(egui::FontId::new(16.0, theme::condensed())).color(theme::TEXT));
+        });
+}
+
+/// Persistent warning across the top of the preview (below the badge).
+fn camera_banner(ui: &mut egui::Ui, rect: egui::Rect, warning: &str) {
+    let area = egui::Rect::from_min_max(rect.left_top() + egui::vec2(12.0, 48.0), egui::pos2(rect.right() - 12.0, rect.bottom()));
+    let mut banner = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
+    egui::Frame::new()
+        .fill(egui::Color32::from_black_alpha(200))
+        .corner_radius(3.0)
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(&mut banner, |ui| {
-            ui.label(egui::RichText::new(format!("⚠ {warning}")).strong().color(ui.visuals().warn_fg_color));
+            ui.label(egui::RichText::new(format!("⚠ {warning}")).color(theme::WARN));
         });
 }
 

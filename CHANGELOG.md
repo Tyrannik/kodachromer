@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A new look for the app.** The library is a strip of slide film: frames sit between sprocket
+  holes with their frame number printed along the edge, and the frame you're editing is outlined.
+  Everything around the photo is now strictly neutral grey, so nothing on screen tints how you judge
+  its colour. The edit panel is grouped into Film, Adjust, Tune, Copy settings and Export, with
+  labels in one column and value boxes of one width. Each Tune slider is centred on the film's
+  Kodak-data value, so an untouched film shows its handles in the middle. An (i) beside less obvious settings
+  (Output, Fit camera highlights, Halation, the Tune sliders and more) explains them on hover. Compare and zoom moved to a bar under the photo. Type is Barlow.
+- **Fix:** opening **Tune** no longer marks the film as changed. The sliders snapped some values to
+  their step just by being shown (Kodachrome's 0.003 screen black became 0), so saving changed
+  the film without you touching it.
 - **First black-and-white film: Tri-X 400.** A new black-and-white model built from Kodak
   publication F-4017: the 400TX characteristic curve for D-76 (8 minutes, Kodak's contrast aim),
   the film's panchromatic spectral sensitivity, its MTF and its published rms granularity of 17.
