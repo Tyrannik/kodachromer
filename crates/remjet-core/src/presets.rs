@@ -17,6 +17,7 @@ pub const BUILTINS: &[(&str, &str)] = &[
     ("ektar100", "Ektar 100"),
     ("gold200", "Gold 200"),
     ("ultramax400", "Ultramax 400"),
+    ("trix400", "Tri-X 400"),
 ];
 
 pub fn user_dir() -> Option<PathBuf> {

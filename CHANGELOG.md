@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **First black-and-white film: Tri-X 400.** A new black-and-white model built from Kodak
+  publication F-4017: the 400TX characteristic curve for D-76 (8 minutes, Kodak's contrast aim),
+  the film's panchromatic spectral sensitivity, its MTF and its published rms granularity of 17.
+  One silver image, so the result is exactly neutral and the grain has no colour. Kodak publishes
+  no paper for it, so it is shown as a lab scan of the negative; the scanner colour sliders work
+  as toning.
+
 ## 0.1.0-alpha.6
 
 - **Three new colour negatives: Ektar 100, Gold 200 and Ultramax 400.** Each is built from its own

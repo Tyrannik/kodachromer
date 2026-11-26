@@ -18,6 +18,10 @@
 //!   print paper's spectral sensitivity. Printing densities expose the paper
 //!   through its own characteristic curves and dyes, with printer lights
 //!   solved so the reference grey prints neutral.
+//! - **Black-and-white negative.** One panchromatic sensitivity and one
+//!   diffuse visual density curve, shared by all three channels so the
+//!   image stays exactly neutral; the negative is viewed through the same
+//!   lab scanner as the colour negatives (there is no paper data).
 //! - **Viewing.** Film transmittance (or print reflectance) spectra are lit
 //!   by 5000 K daylight (D50, the datasheets' viewing condition) and
 //!   integrated with the CIE 1931 observer. White is the film base or paper.
@@ -95,11 +99,30 @@ impl Series {
     }
 }
 
+/// Per-layer curves. A black-and-white film gives one `neutral` curve in
+/// the TOML, used for all three channels.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RgbSeriesToml")]
 pub struct RgbSeries {
     pub red: Series,
     pub green: Series,
     pub blue: Series,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RgbSeriesToml {
+    Rgb { red: Series, green: Series, blue: Series },
+    Neutral { neutral: Series },
+}
+
+impl From<RgbSeriesToml> for RgbSeries {
+    fn from(t: RgbSeriesToml) -> Self {
+        match t {
+            RgbSeriesToml::Rgb { red, green, blue } => Self { red, green, blue },
+            RgbSeriesToml::Neutral { neutral } => Self { red: neutral.clone(), green: neutral.clone(), blue: neutral },
+        }
+    }
 }
 
 impl RgbSeries {
@@ -130,13 +153,16 @@ impl DyeSet {
 pub enum Densitometry {
     StatusA,
     StatusM,
+    /// Black-and-white films: diffuse visual density (one curve).
+    DiffuseVisual,
 }
 
 impl Densitometry {
+    /// Densitometer bands of a colour densitometry (validated before use).
     fn bands(self) -> &'static [StatusBand; 3] {
         match self {
             Self::StatusA => &cie::STATUS_A,
-            Self::StatusM => &cie::STATUS_M,
+            Self::StatusM | Self::DiffuseVisual => &cie::STATUS_M,
         }
     }
 }
@@ -149,12 +175,32 @@ pub struct NegativeDensity {
 }
 
 /// Modulation transfer per layer, in percent, at `frequencies` (cycles/mm).
+/// A black-and-white film gives one `neutral` list in the TOML.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "MtfToml")]
 pub struct Mtf {
     pub frequencies: Vec<f64>,
     pub red: Vec<f64>,
     pub green: Vec<f64>,
     pub blue: Vec<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum MtfToml {
+    Rgb { frequencies: Vec<f64>, red: Vec<f64>, green: Vec<f64>, blue: Vec<f64> },
+    Neutral { frequencies: Vec<f64>, neutral: Vec<f64> },
+}
+
+impl From<MtfToml> for Mtf {
+    fn from(t: MtfToml) -> Self {
+        match t {
+            MtfToml::Rgb { frequencies, red, green, blue } => Self { frequencies, red, green, blue },
+            MtfToml::Neutral { frequencies, neutral } => {
+                Self { frequencies, red: neutral.clone(), green: neutral.clone(), blue: neutral }
+            }
+        }
+    }
 }
 
 /// Measured data for the taking film.
@@ -197,6 +243,8 @@ pub enum Process {
     Reversal,
     /// Colour negative (C-41), printed on paper.
     Negative,
+    /// Black-and-white negative, scanned.
+    Monochrome,
 }
 
 impl Datasheet {
@@ -213,7 +261,17 @@ impl Datasheet {
                 bail!("datasheet mtf: each layer needs one value per frequency");
             }
         }
+        let mono = self.densitometry == Densitometry::DiffuseVisual;
+        if mono != (process == Process::Monochrome) {
+            bail!("diffuse visual densitometry is for black-and-white (monochrome) films only");
+        }
         match process {
+            Process::Monochrome => {
+                let c = self.curves.get();
+                if c[1] != c[0] || c[2] != c[0] {
+                    bail!("a black-and-white film has one characteristic curve");
+                }
+            }
             Process::Reversal => {
                 let d = self.dyes.as_ref().context("a reversal film needs [datasheet.dyes]")?;
                 for s in d.get() {
@@ -692,6 +750,20 @@ impl Core {
             [&m.red, &m.green, &m.blue].map(|v| fit_spread(&m.frequencies, v))
         });
         match process {
+            Process::Monochrome => {
+                // One silver image: the same visual density in every channel.
+                let (x0, step, n) = curve_grid(&ds.curves);
+                let curve = &ds.curves.green;
+                let develop = Table { x0, step, y: (0..n).map(|k| [curve.at(x0 + step * k as f64); 3]).collect() };
+                let dmin = [curve.values[0]; 3];
+                let lab_scan = LabScan::new(&develop, [1.0; 3], dmin, log_h_ref);
+                // Silver is close to spectrally neutral: viewing the negative
+                // itself (unused by the app) is its density read flat.
+                let flat = [1.0 / 3.0; NW];
+                let stack = DyeStack { dyes: [flat; 3], base: [0.0; NW] };
+                let viewer = Viewer::new(&stack, 0.0, develop.max() + 0.3, &dmin);
+                Ok(Self { process, to_layers, develop, printer: None, lab_scan: Some(lab_scan), viewer, spread })
+            }
             Process::Reversal => {
                 let d = ds.dyes.as_ref().expect("validated");
                 let stack = DyeStack { dyes: d.get().map(|s| s.spectrum()), base: [0.0; NW] };
@@ -971,7 +1043,7 @@ mod datasheet_tests {
 
     #[test]
     fn ramps_are_monotonic_from_black_to_white() {
-        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400"] {
+        for id in ["ektachrome-e100", "portra400", "ektar100", "gold200", "ultramax400", "trix400"] {
             let (p, _) = core(id);
             let m = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
             let g = p.exposure.grey_linear as f32;
@@ -1020,5 +1092,30 @@ mod datasheet_tests {
         // the default highlight fit.
         let range = |o| tone(o, 3.0)[1] - tone(o, 1.5)[1];
         assert!(range(OutputMode::Scan) > 1.5 * range(OutputMode::Print), "{} vs {}", range(OutputMode::Scan), range(OutputMode::Print));
+    }
+
+    #[test]
+    fn trix_is_exactly_neutral_and_reproduces_its_curve() {
+        let (p, c) = core("trix400");
+        let ds = p.datasheet.as_ref().unwrap();
+        // One curve in the TOML, the same in every channel.
+        assert_eq!(ds.curves.red, ds.curves.blue);
+        for (k, d) in c.develop.y.iter().enumerate() {
+            let x = c.develop.x0 + c.develop.step * k as f64;
+            assert!(d.iter().all(|v| (v - ds.curves.green.at(x)).abs() < 1e-9));
+        }
+        let m = FilmModel::new(&p, &FilmParams { grain: 0.0, halation: 1.0, ..Default::default() }).unwrap();
+        let g = p.exposure.grey_linear as f32;
+        // Coloured light still gives a neutral (grey) result.
+        for rgb in [[g, g, g], [g * 3.0, g * 0.2, g * 0.1], [g * 0.1, g * 0.5, g * 4.0], [1.0, 0.5, 0.05]] {
+            let o = m.scan(m.densities(rgb));
+            assert!((o[0] - o[1]).abs() < 1e-5 && (o[2] - o[1]).abs() < 1e-5, "{rgb:?} -> {o:?}");
+        }
+        // Panchromatic: strong red light still exposes the film.
+        let red = m.scan(m.densities([g * 2.0, g * 0.05, g * 0.05]))[1];
+        assert!(red > 0.02, "{red}");
+        // The grey card lands mid-scale, not at the ends.
+        let grey = m.scan(m.densities([g; 3]))[1];
+        assert!((0.1..0.4).contains(&grey), "{grey}");
     }
 }

@@ -43,6 +43,8 @@ Optional **halation**, the red glow around bright lights that film without an an
   spectra.** Layer sensitivities, dyes, curves and sharpness all come from Kodak's datasheets
   (E-4000, E-4050, E-4046, E-7022, E-7023). The negatives are shown as a lab scan of the negative,
   or as an optical print on Endura Premier paper (E-4070).
+- **Tri-X 400 in black and white**, from Kodak's F-4017: its D-76 curve, panchromatic sensitivity,
+  MTF and rms granularity, shown as a lab scan of the negative.
 - **Per-image controls:** exposure, warmth, tint, highlights, halation, sharpen, grain, grain size.
   Double-click any slider to reset it.
 - **Tune the film itself:** brightness, contrast, saturation, shadow lift, black depth, scanner

@@ -162,6 +162,7 @@ pub const PORTRA_400: &str = include_str!("../../../presets/portra400.toml");
 pub const EKTAR_100: &str = include_str!("../../../presets/ektar100.toml");
 pub const GOLD_200: &str = include_str!("../../../presets/gold200.toml");
 pub const ULTRAMAX_400: &str = include_str!("../../../presets/ultramax400.toml");
+pub const TRIX_400: &str = include_str!("../../../presets/trix400.toml");
 
 impl FilmPreset {
     pub fn from_toml(text: &str) -> Result<Self> {
@@ -200,7 +201,8 @@ impl FilmPreset {
             "ektar100" => Self::from_toml(EKTAR_100),
             "gold200" => Self::from_toml(GOLD_200),
             "ultramax400" => Self::from_toml(ULTRAMAX_400),
-            _ => bail!("unknown built-in preset '{id}' (available: kodachrome64, ektachrome-e100, portra400, ektar100, gold200, ultramax400)"),
+            "trix400" => Self::from_toml(TRIX_400),
+            _ => bail!("unknown built-in preset '{id}' (available: kodachrome64, ektachrome-e100, portra400, ektar100, gold200, ultramax400, trix400)"),
         }
     }
 
@@ -211,6 +213,11 @@ impl FilmPreset {
     /// True for colour negatives, which are always viewed as a print.
     pub fn is_negative(&self) -> bool {
         self.process == Some(Process::Negative)
+    }
+
+    /// True for black-and-white films, which are always scanned.
+    pub fn is_monochrome(&self) -> bool {
+        self.process == Some(Process::Monochrome)
     }
 }
 
@@ -483,8 +490,9 @@ impl FilmModel {
             let develop = [0, 1, 2].map(|ch| Lut::from_fn(LOG_E_MIN, LOG_E_MAX, |x| core.develop.eval(ch, x)));
             // A negative is lab-scanned (the default) or printed; either is
             // looked at, not projected. A slide has no print.
-            let lab_scan = process == Process::Negative && output != OutputMode::Print;
-            if process == Process::Negative || output == OutputMode::Print {
+            // A black-and-white negative has no paper data: it is always scanned.
+            let lab_scan = (process == Process::Negative && output != OutputMode::Print) || process == Process::Monochrome;
+            if process != Process::Reversal || output == OutputMode::Print {
                 output = OutputMode::Scan;
             }
             // Film sharpness is a size on the film: convert with this camera's pitch.
