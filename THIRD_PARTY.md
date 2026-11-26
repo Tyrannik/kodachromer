@@ -11,6 +11,8 @@ Notable components:
   from crates.io and the project above, and Remjet's full source is in this repository.
 - **egui / eframe** (MIT OR Apache-2.0) - user interface. Bundled fonts: Ubuntu Font Licence 1.0
   and SIL Open Font License 1.1 (epaint_default_fonts).
+- **Barlow** and **Barlow Condensed** (SIL Open Font License 1.1, copyright 2017 The Barlow Project
+  Authors, https://github.com/jpt/barlow) - interface typeface, in assets/fonts with its licence.
 - **image**, **jpeg-encoder**, **rayon**, **serde**, **toml**, **rfd**, **wgpu** - MIT and/or Apache-2.0.
 
 Film data: the Kodachrome 64 characteristic and spectral dye-density curves in
