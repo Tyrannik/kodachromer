@@ -7,7 +7,8 @@
   Everything around the photo is now strictly neutral grey, so nothing on screen tints how you judge
   its colour. The edit panel is grouped into Film, Adjust, Tune, Copy settings and Export, with
   labels in one column and value boxes of one width. Each Tune slider is centred on the film's
-  Kodak-data value, so an untouched film shows its handles in the middle. Compare and zoom moved to a bar under the photo. Type is Barlow.
+  Kodak-data value, so an untouched film shows its handles in the middle. An (i) beside less obvious settings
+  (Output, Fit camera highlights, Halation, the Tune sliders and more) explains them on hover. Compare and zoom moved to a bar under the photo. Type is Barlow.
 - **Fix:** opening **Tune** no longer marks the film as changed. The sliders snapped some values to
   their step just by being shown (Kodachrome's 0.003 screen black became 0), so saving changed
   the film without you touching it.

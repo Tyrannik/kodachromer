@@ -1089,7 +1089,7 @@ impl FilmApp {
         // Colour negatives are always shown as a print on their paper.
         let print = self.edit.preset.as_deref().and_then(|id| presets::load(id).ok()).filter(|p| p.is_negative()).and_then(|p| p.print);
         if let Some(paper) = print {
-            row(ui, "Output", |ui| {
+            row_info(ui, "Output", Some("Colour negatives are always shown as an optical print: the negative exposes the paper through its own curves and dyes, from Kodak's data."), |ui| {
                 ui.label(format!("Print on {}", paper.name))
                     .on_hover_text("Colour negatives are printed through the paper's own curves and dyes from Kodak's data.");
             });
@@ -1099,7 +1099,7 @@ impl FilmApp {
                     OutputMode::Scan => "Scanned slide",
                     OutputMode::Projection => "Projected slide",
                 };
-                row(ui, "Output", |ui| {
+                row_info(ui, "Output", Some(OUTPUT_INFO), |ui| {
                     egui::ComboBox::from_id_salt("output").width(ui.available_width()).selected_text(label(self.edit.output)).show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.edit.output, OutputMode::Scan, label(OutputMode::Scan))
                             .on_hover_text("As a film scanner reads the slide: open shadows, scanner balance.");
@@ -1114,21 +1114,24 @@ impl FilmApp {
         let d = Edit::default();
         let film = self.edit.preset.is_some();
         let e = &mut self.edit;
-        slider(ui, true, &mut e.exposure_ev, -2.0..=2.0, 0.05, "Exposure", d.exposure_ev);
-        slider(ui, true, &mut e.warmth, -1.0..=1.0, 0.01, "Warmth", d.warmth);
-        slider(ui, true, &mut e.tint, -1.0..=1.0, 0.01, "Tint", d.tint);
-        slider(ui, film, &mut e.highlights, -1.0..=1.0, 0.01, "Highlights", d.highlights);
+        slider(ui, true, &mut e.exposure_ev, -2.0..=2.0, 0.05, "Exposure", d.exposure_ev, None);
+        slider(ui, true, &mut e.warmth, -1.0..=1.0, 0.01, "Warmth", d.warmth, None);
+        slider(ui, true, &mut e.tint, -1.0..=1.0, 0.01, "Tint", d.tint, None);
+        slider(ui, film, &mut e.highlights, -1.0..=1.0, 0.01, "Highlights", d.highlights, Some("How the film's highlights roll off. Left keeps more detail in bright areas; right makes them brighter, so they blow out sooner."));
         ui.horizontal(|ui| {
             ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
-            ui.add_enabled(film, egui::Checkbox::new(&mut e.fit_highlights, "Fit camera highlights to film")).on_hover_text(
-                "On: the camera's brightest recorded tone lands on the film's white, so highlights keep their detail. \
-                 Off: the Kodak datasheet curve exactly as published.",
+            ui.add_enabled(film, egui::Checkbox::new(&mut e.fit_highlights, "Fit camera highlights to film"));
+            theme::info(
+                ui,
+                "A camera records about three stops above mid-grey before it clips, while the film's curve runs further. \
+                 On: the camera's brightest tone is placed on the film's white, so the top stop keeps its detail and whites look white. \
+                 Off: the Kodak datasheet curve exactly as published, which can leave the brightest tones a dull light grey.",
             );
         });
-        slider(ui, film, &mut e.halation, 0.0..=1.0, 0.01, "Halation", d.halation);
-        slider(ui, true, &mut e.sharpen, 0.0..=1.0, 0.01, "Sharpen", d.sharpen);
-        slider(ui, film, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain);
-        slider(ui, film, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size);
+        slider(ui, film, &mut e.halation, 0.0..=1.0, 0.01, "Halation", d.halation, Some("The red-orange glow film shows around bright lights, from light that passes through the film, reflects off its back and exposes it again. 0 is off."));
+        slider(ui, true, &mut e.sharpen, 0.0..=1.0, 0.01, "Sharpen", d.sharpen, Some("Detail sharpening like a film scanner's. It works on brightness only, so it doesn't add colour fringes."));
+        slider(ui, film, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain, None);
+        slider(ui, film, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size, Some("Size of the grain clumps, relative to the film's own. Grain is sized on the film, so it looks the same at any export size."));
         theme::hint(ui, "Double-click a slider to reset it.");
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -1224,31 +1227,39 @@ impl FilmApp {
             // Base brightness shown as EV relative to the reference grey.
             let before = -(w.exposure.grey_linear / r.exposure.grey_linear).log2() as f32;
             let mut bright = before;
-            slider(ui, true, &mut bright, -1.0..=1.0, 0.01, "Brightness", 0.0);
+            slider(ui, true, &mut bright, -1.0..=1.0, 0.01, "Brightness", 0.0, Some("Which camera brightness the film treats as a mid-grey card, in stops from the Kodak value. Unlike Exposure, it changes the film for every image."));
             if (bright - before).abs() > 1e-6 {
                 let grey = r.exposure.grey_linear * 2f64.powf(-bright as f64);
                 w.exposure.grey_linear = (grey * 1e5).round() / 1e5;
             }
-            slider64(ui, &mut w.look.contrast, 0.7..=1.4, "Contrast", r.look.contrast);
-            slider64(ui, &mut w.look.interimage, 0.0..=0.6, "Saturation", r.look.interimage);
-            slider64(ui, &mut w.scan.gamma, 0.8..=1.6, "Shadow lift", r.scan.gamma);
-            slider64(ui, &mut w.scan.black_density, 2.4..=3.8, "Black depth", r.scan.black_density);
+            slider64(ui, &mut w.look.contrast, 0.7..=1.4, "Contrast", r.look.contrast, Some("Steepness of the film's tone curve around mid-grey. Above 1 is more contrasty than Kodak's data, below 1 flatter."));
+            slider64(ui, &mut w.look.interimage, 0.0..=0.6, "Saturation", r.look.interimage, Some("How strongly the film's colour layers hold each other back (interimage effect). This is what gives slide film its dense, saturated colour. 0 turns it off."));
+            slider64(ui, &mut w.scan.gamma, 0.8..=1.6, "Shadow lift", r.scan.gamma, Some("The scanner software's gamma. Above 1 opens up shadows the way scanning software does; 1 is the slide's raw transmittance."));
+            slider64(ui, &mut w.scan.black_density, 2.4..=3.8, "Black depth", r.scan.black_density, Some("The film density the scanner reads as pure black. Higher keeps detail in deep shadows but greyer blacks; lower crushes them to black sooner."));
             let negative = w.is_negative();
-            subhead(ui, if negative { "Print colour" } else { "Scanner colour" });
-            slider64(ui, &mut w.scan.white_balance[0], 0.85..=1.15, "Red", r.scan.white_balance[0]);
-            slider64(ui, &mut w.scan.white_balance[1], 0.85..=1.15, "Green", r.scan.white_balance[1]);
-            slider64(ui, &mut w.scan.white_balance[2], 0.85..=1.15, "Blue", r.scan.white_balance[2]);
+            subhead_info(
+                ui,
+                if negative { "Print colour" } else { "Scanner colour" },
+                if negative {
+                    "Colour balance of the printing light, per channel. Above 1 adds that colour to the print."
+                } else {
+                    "Colour balance the scanner applies, per channel. Above 1 adds that colour to the scan. Only affects Scanned slide output."
+                },
+            );
+            slider64(ui, &mut w.scan.white_balance[0], 0.85..=1.15, "Red", r.scan.white_balance[0], None);
+            slider64(ui, &mut w.scan.white_balance[1], 0.85..=1.15, "Green", r.scan.white_balance[1], None);
+            slider64(ui, &mut w.scan.white_balance[2], 0.85..=1.15, "Blue", r.scan.white_balance[2], None);
             subhead(ui, "Grain");
-            slider64(ui, &mut w.grain.amount, 0.0..=1.2, "Strength", r.grain.amount);
+            slider64(ui, &mut w.grain.amount, 0.0..=1.2, "Strength", r.grain.amount, None);
             let mut colour = 1.0 - w.grain.correlation;
-            slider64(ui, &mut colour, 0.0..=1.0, "Colour grain", 1.0 - r.grain.correlation);
+            slider64(ui, &mut colour, 0.0..=1.0, "Colour grain", 1.0 - r.grain.correlation, Some("How much each colour layer's grain differs from the others. 0 is grain in brightness only; higher adds coloured speckle."));
             w.grain.correlation = 1.0 - colour;
             if !negative {
-                subhead(ui, "Projection (for Projected slide output)");
-                slider64(ui, &mut w.projection.flare, 0.0..=0.02, "Screen black", r.projection.flare);
-                slider64(ui, &mut w.projection.falloff_stops, 0.0..=1.5, "Corner falloff", r.projection.falloff_stops);
-                slider64(ui, &mut w.projection.white_balance[0], 0.85..=1.15, "Lamp red", r.projection.white_balance[0]);
-                slider64(ui, &mut w.projection.white_balance[2], 0.75..=1.15, "Lamp blue", r.projection.white_balance[2]);
+                subhead_info(ui, "Projection", "How the slide looks on a screen. Only affects Projected slide output.");
+                slider64(ui, &mut w.projection.flare, 0.0..=0.02, "Screen black", r.projection.flare, Some("Light from the room and screen that lands on the darkest parts of the picture, as a fraction of white. It sets how black a projected slide can get: 0.003 is about 330:1."));
+                slider64(ui, &mut w.projection.falloff_stops, 0.0..=1.5, "Corner falloff", r.projection.falloff_stops, Some("How much darker the projector makes the corners than the centre, in stops."));
+                slider64(ui, &mut w.projection.white_balance[0], 0.85..=1.15, "Lamp red", r.projection.white_balance[0], Some("Colour of the projector lamp. Tungsten lamps stay a little warm even after your eyes adapt."));
+                slider64(ui, &mut w.projection.white_balance[2], 0.75..=1.15, "Lamp blue", r.projection.white_balance[2], None);
             }
 
             ui.add_space(4.0);
@@ -1357,11 +1368,12 @@ impl FilmApp {
             });
         });
         let mut q = opts.quality as f32;
-        slider(ui, true, &mut q, 60.0..=100.0, 1.0, "Quality", 92.0);
+        slider(ui, true, &mut q, 60.0..=100.0, 1.0, "Quality", 92.0, None);
         opts.quality = q.round() as _;
         ui.horizontal(|ui| {
             ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
             ui.checkbox(&mut opts.keep_exif, "Keep camera metadata (EXIF)");
+            theme::info(ui, "Copies the date, camera, lens and exposure settings from the DNG into the JPG. Off writes no metadata.");
         });
 
         let dest = match (&self.settings.export_dir, &self.folder) {
@@ -1622,15 +1634,29 @@ enum TuneAction {
 }
 
 /// Width of the label column in the edit panel.
-const LABEL_WIDTH: f32 = 82.0;
+const LABEL_WIDTH: f32 = 104.0;
 
 /// A labelled row in the edit panel: label on the left, control filling the rest.
 fn row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    row_info(ui, label, None, add)
+}
+
+/// A labelled row with an optional (i) explanation beside the label.
+fn row_info<R>(ui: &mut egui::Ui, label: &str, info: Option<&str>, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal(|ui| {
         let h = ui.spacing().interact_size.y;
         ui.allocate_ui_with_layout(egui::vec2(LABEL_WIDTH, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.set_min_width(LABEL_WIDTH);
+            ui.set_max_width(LABEL_WIDTH);
             ui.label(egui::RichText::new(label).color(theme::TEXT_WEAK));
+            // The (i) sits at the column's right edge, so every row keeps
+            // the same slider start and the icons line up.
+            if let Some(text) = info {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(6.0);
+                    theme::info(ui, text);
+                });
+            }
         });
         add(ui)
     })
@@ -1643,10 +1669,23 @@ fn subhead(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).font(egui::FontId::new(15.0, theme::condensed())).color(theme::TEXT_WEAK));
 }
 
+fn subhead_info(ui: &mut egui::Ui, text: &str, info: &str) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        ui.label(egui::RichText::new(text).font(egui::FontId::new(15.0, theme::condensed())).color(theme::TEXT_WEAK));
+        theme::info(ui, info);
+    });
+}
+
+const OUTPUT_INFO: &str = "How the slide is turned into a picture. \
+    Scanned slide: as a film scanner reads it, with open shadows and the scanner's colour balance. \
+    Projected slide: as it looks on a screen, with the film's full density range, deep blacks, a warm lamp and darker corners.";
+
 /// Tuning slider. `range` sets the span; the slider is centred on `default`
 /// (the Kodak-data value), so an untouched film shows every handle in the
 /// middle. Values that can't go negative keep their floor at zero.
-fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str, default: f64) {
+fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str, default: f64, info: Option<&str>) {
     let (lo, hi) = (*range.start(), *range.end());
     let half = (hi - lo) / 2.0;
     let floor = if lo >= 0.0 { 0.0 } else { f64::NEG_INFINITY };
@@ -1657,7 +1696,7 @@ fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<
     let mut v = *value as f32;
     // Fine steps: egui snaps the value to the step every frame, and a coarser
     // step would quietly change a preset (e.g. a 0.003 flare) just by showing it.
-    slider(ui, true, &mut v, lo..=hi, 0.001, text, default as f32);
+    slider(ui, true, &mut v, lo..=hi, 0.001, text, default as f32, info);
     if (v - *value as f32).abs() > 1e-6 {
         // Round so saved presets read cleanly (0.53, not 0.5299999713897705).
         *value = (v as f64 * 1000.0).round() / 1000.0;
@@ -1665,10 +1704,11 @@ fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<
 }
 
 /// Labelled slider that resets to `default` on double-click.
-fn slider(ui: &mut egui::Ui, enabled: bool, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f64, text: &str, default: f32) {
+#[allow(clippy::too_many_arguments)]
+fn slider(ui: &mut egui::Ui, enabled: bool, value: &mut f32, range: std::ops::RangeInclusive<f32>, step: f64, text: &str, default: f32, info: Option<&str>) {
     let resp = ui
         .add_enabled_ui(enabled, |ui| {
-            row(ui, text, |ui| {
+            row_info(ui, text, info, |ui| {
                 // One width for every value box, wide enough for "-1.000", so
                 // rails and boxes line up whatever the value's length.
                 const VALUE_BOX: f32 = 58.0;

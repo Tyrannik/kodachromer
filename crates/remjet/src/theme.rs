@@ -133,3 +133,20 @@ pub fn section(ui: &mut egui::Ui, title: &str) {
 pub fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).small().color(TEXT_WEAK));
 }
+
+/// A small (i) that explains the setting beside it when hovered.
+pub fn info(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let size = 15.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+    let color = if resp.hovered() { TEXT } else { TEXT_WEAK };
+    let p = ui.painter();
+    p.circle_stroke(rect.center(), size / 2.0 - 1.0, Stroke::new(1.0, color));
+    p.text(rect.center() + Vec2::new(0.0, 0.5), egui::Align2::CENTER_CENTER, "i", FontId::new(11.0, condensed()), color);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Help);
+    }
+    resp.on_hover_ui(|ui| {
+        ui.set_max_width(280.0);
+        ui.label(text);
+    })
+}

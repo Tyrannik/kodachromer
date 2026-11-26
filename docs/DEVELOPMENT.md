@@ -56,7 +56,9 @@ How Remjet is put together, for anyone reading or extending the code.
   lighter surround than the panels, so the interface never tints colour judgement. Colour is used in
   one place, the library's film strip (edge-print amber), plus red for warnings. Selected buttons
   and slider fills stay grey for the same reason. Fonts: Barlow, with Barlow Condensed for section
-  titles and the edge print; egui's own fonts remain as fallbacks for symbols.
+  titles and the edge print; egui's own fonts remain as fallbacks for symbols. Give any setting that
+  isn't self-explanatory an (i): pass its explanation as `info` to `slider`/`row_info`, or call
+  `theme::info` beside a checkbox.
 - Sliders round their value to their step every frame they are shown (egui clamps and snaps), so a
   slider's step must be finer than the values it displays, or showing it silently edits them.
 - "Tune" edits a copy of the film preset live; Save writes a user override, which preview,
