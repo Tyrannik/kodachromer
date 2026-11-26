@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.6
 
 - **First black-and-white film: Tri-X 400.** A new black-and-white model built from Kodak
   publication F-4017: the 400TX characteristic curve for D-76 (8 minutes, Kodak's contrast aim),
