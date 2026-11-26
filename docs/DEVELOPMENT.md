@@ -9,7 +9,7 @@ How Remjet is put together, for anyone reading or extending the code.
 | `crates/remjet-core` | Everything that touches pixels: DNG decoding, colour science, the film model, grain, halation, edits/sidecars, export, EXIF. No UI. |
 | `crates/remjet` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
 | `crates/remjet-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
-| `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml`, `portra400.toml`, `ektar100.toml`, `gold200.toml`, `ultramax400.toml`, `portra800.toml` and `trix400.toml` (spectral model; Tri-X is `process = "monochrome"`). |
+| `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml`, `ektachrome-e100vs.toml`, `ektachrome-e200.toml`, `portra160.toml`, `portra400.toml`, `portra800.toml`, `ektar100.toml`, `gold200.toml`, `ultramax400.toml`, `trix400.toml`, `tmax100.toml` and `tmax400.toml` (spectral model; Tri-X and T-Max are `process = "monochrome"`). |
 | `assets/` | Icon, and the Barlow fonts the app embeds (`assets/fonts`, SIL OFL 1.1). |
 
 ## Image pipeline
@@ -70,7 +70,7 @@ How Remjet is put together, for anyone reading or extending the code.
 
 ## Spectral film model
 
-Ektachrome E100, the colour negatives (Portra 400, Portra 800, Ektar 100, Gold 200, Ultramax 400) and Tri-X 400 use `spectral.rs` instead of the Kodachrome matrix model. A preset
+Ektachrome E100, E100VS and E200, the colour negatives (Portra 160, Portra 400, Portra 800, Ektar 100, Gold 200, Ultramax 400) and the black-and-white films (Tri-X 400, T-Max 100, T-Max 400) use `spectral.rs` instead of the Kodachrome matrix model. A preset
 with `process = "reversal"`, `"negative"` or `"monochrome"` carries its datasheet as `[datasheet]` (and, for a
 negative, its paper as `[print]`); everything else is computed from those spectra when the film is
 first used, and cached:
@@ -147,6 +147,15 @@ and the print grey aim are not in the datasheets; both are marked as estimates i
   Other push sources checked: E-116 (Ektapress PJ400/PJ800 push 1 and 2 curves), E-147 (Ektachrome
   P1600 push 2, Status A), E-28 (E200 push times only) and E-55/E-88 (Kodachrome 200 push ratings;
   Kodak does not recommend pushing Kodachrome 64).
+- Kodak publication **E-4051**, *KODAK PROFESSIONAL PORTRA 160 Film* (01/2025): the same plots as
+  E-4050 (Log H Ref -1.051).
+- Kodak publications **F-4016**, *KODAK PROFESSIONAL T-MAX 100 Film* (06/2018), and **F-4043**,
+  *KODAK PROFESSIONAL T-MAX 400 Film* (02/2016): characteristic curves (diffuse visual, D-76 small
+  tank at 6/7.5/10 and 6/8/11 min), spectral sensitivity (D = 1.0 above D-min curve), MTF, diffuse
+  rms granularity.
+- Kodak publications **E-163**, *KODAK PROFESSIONAL EKTACHROME Film E100VS*, and **E-28**, *KODAK
+  PROFESSIONAL EKTACHROME Film E200* (2005, also its push table): the same plots as E-4000. These
+  older PDFs draw several curves in one path, and E-28's green MTF as many small filled pieces.
 - Kodak publication **E-4070**, *KODAK PROFESSIONAL ENDURA PREMIER Paper*: characteristic curves
   (Status A reflection), spectral sensitivity, spectral dye density.
 - **ISO 5-3:1995** (ANSI/NAPM IT2.18), Tables 3 and 4: Status A and Status M spectral products.

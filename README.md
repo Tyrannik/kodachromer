@@ -39,13 +39,13 @@ Optional **halation**, the red glow around bright lights that film without an an
 
 - **Kodachrome 64, built from Kodak data.** Characteristic curves and dye cross-absorption are
   digitised from Kodak publication E-55. A virtual scanner then gives the scanned-slide look.
-- **Ektachrome E100, Portra 400, Portra 800, Ektar 100, Gold 200 and Ultramax 400, modelled from their
-  spectra.** Layer sensitivities, dyes, curves and sharpness all come from Kodak's datasheets
-  (E-4000, E-4050, E-4040, E-4046, E-7022, E-7023). The negatives are shown as a lab scan of the negative,
+- **Ektachrome E100, E100VS and E200, Portra 160, 400 and 800, Ektar 100, Gold 200 and Ultramax 400,
+  modelled from their spectra.** Layer sensitivities, dyes, curves and sharpness all come from Kodak's
+  datasheets (E-4000, E-163, E-28, E-4051, E-4050, E-4040, E-4046, E-7022, E-7023). The negatives are shown as a lab scan of the negative,
   or as an optical print on Endura Premier paper (E-4070).
-- **Tri-X 400 in black and white**, from Kodak's F-4017: its D-76 curve, panchromatic sensitivity,
-  MTF and rms granularity, shown as a lab scan of the negative.
-- **Push and pull development:** Tri-X uses Kodak's measured push curves; the colour films use
+- **Tri-X 400, T-Max 100 and T-Max 400 in black and white**, from Kodak's F-4017, F-4016 and F-4043:
+  their D-76 curves, panchromatic sensitivity, MTF and rms granularity, shown as a lab scan of the negative.
+- **Push and pull development:** Tri-X and T-Max use Kodak's measured D-76 curves; the colour films use
   pushes modelled on Kodak's measured Portra 800 push data (Portra 800 itself uses those measured curves), labelled "modelled" in the app.
 - **Per-image controls:** exposure, warmth, tint, highlights, halation, sharpen, grain, grain size.
   Double-click any slider to reset it.
