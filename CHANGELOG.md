@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Saturated colours no longer wash out.** Bright, saturated colours (a yellow car most of all)
+  came out pale and creamy on the colour negatives and Kodachrome 64. The cause was a missing
+  scanner step: the film's layers see colour through broad, overlapping sensitivities, and their
+  scanner readings were shown as screen colours directly, which cost about a fifth of the chroma
+  of every saturated colour. Scans now get the colour calibration a lab scanner applies (layer
+  primaries back to sRGB, with colours outside sRGB desaturated toward their own grey rather than
+  clipped). Neutrals are unchanged. The new **Scanner colour** checkbox (on by default; CLI:
+  `--no-scanner-colour`) brings back the old look. Ektachrome E100 and the Endura print are
+  viewed through their real dyes and are unaffected.
 - **New colour negative: Portra 800.** Built from Kodak publication E-4040 (2025) like Portra 400:
   characteristic curves, layer sensitivities, the negative's measured spectra and MTF. Its
   **Development** menu offers push 1 (EI 1600) and push 2 (EI 3200) from Kodak's own measured

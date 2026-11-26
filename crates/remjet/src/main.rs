@@ -445,6 +445,7 @@ fn describe_change(a: &Edit, b: &Edit) -> String {
     check(a.tint != b.tint, "tint");
     check(a.highlights != b.highlights, "highlights");
     check(a.fit_highlights != b.fit_highlights, "highlight fit");
+    check(a.scanner_colour != b.scanner_colour, "scanner colour");
     check(a.halation != b.halation, "halation");
     check(a.sharpen != b.sharpen, "sharpen");
     check(a.grain != b.grain, "grain");
@@ -1163,6 +1164,16 @@ impl FilmApp {
                 "A camera records about three stops above mid-grey before it clips, while the film's curve runs further. \
                  On: the camera's brightest tone is placed on the film's white, so the top stop keeps its detail and whites look white. \
                  Off: the Kodak datasheet curve exactly as published, which can leave the brightest tones a dull light grey.",
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.add_enabled(film, egui::Checkbox::new(&mut e.scanner_colour, "Scanner colour"));
+            theme::info(
+                ui,
+                "Film layers see colour through broad, overlapping sensitivities, so a scanner's raw red, green and blue readings are washed out. \
+                 On: the readings are calibrated back to true colour, as a lab scanner (Frontier, Noritsu) does. Applies to scanned negatives and Kodachrome. \
+                 Off: the raw readings, with flatter colour, most visibly in bright saturated colours such as yellows.",
             );
         });
         slider(ui, film, &mut e.halation, 0.0..=1.0, 0.01, "Halation", d.halation, Some("The red-orange glow film shows around bright lights, from light that passes through the film, reflects off its back and exposes it again. 0 is off."));

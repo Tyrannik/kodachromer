@@ -317,6 +317,11 @@ pub struct FilmParams {
     pub push: i32,
     /// Scanned or projected slide.
     pub output: OutputMode,
+    /// Scanner colour correction: turn the film's layer readings back into
+    /// display colour with the layers' own primaries (as a lab or slide
+    /// scanner's calibration does). `false` shows the raw scanner channels
+    /// as screen RGB, which flattens saturated colours.
+    pub scanner_colour: bool,
 }
 
 impl Default for FilmParams {
@@ -333,6 +338,7 @@ impl Default for FilmParams {
             halation: 0.0,
             push: 0,
             output: OutputMode::Scan,
+            scanner_colour: true,
         }
     }
 }
@@ -383,6 +389,20 @@ impl Default for Projection {
     fn default() -> Self {
         Self { flare: 0.003, white_balance: [1.04, 1.0, 0.90], falloff_stops: 0.35 }
     }
+}
+
+/// Bring a linear sRGB colour with a negative channel back inside the gamut
+/// by moving it towards the grey of the same luminance, just far enough.
+/// Keeps hue and brightness, so a colour too saturated for sRGB loses
+/// saturation instead of shifting hue as a per-channel clip would.
+fn into_gamut(c: [f32; 3]) -> [f32; 3] {
+    let min = c[0].min(c[1]).min(c[2]);
+    if min >= 0.0 {
+        return c;
+    }
+    let y = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).max(0.0);
+    let t = y / (y - min);
+    c.map(|v| y + t * (v - y))
 }
 
 /// Highlight knee: one stop above mid-grey, in log10 exposure.
@@ -451,6 +471,8 @@ pub struct FilmModel {
     t_black: f32,
     inv_gamma: f32,
     scan_wb: [f32; 3],
+    /// Scanner colour matrix (scanner channels -> linear sRGB), if any.
+    scan_matrix: Option<[[f32; 3]; 3]>,
     grain_sigma: f32,
     /// Halation: gain, blur sigma in output pixels, threshold (input units), tint.
     hal_gain: f32,
@@ -570,6 +592,23 @@ impl FilmModel {
             (engine, to_layers, grey_log_e, log_offset)
         };
 
+        // Scanner colour: the scanner reads each layer, and those readings are
+        // in the layers' own primaries, which are far wider than sRGB (the
+        // layers' sensitivities are broad and overlap). Showing them as
+        // screen RGB directly flattens every saturated colour, most of all
+        // bright ones. A lab scanner's calibration maps them back; so do we.
+        // White maps to white either way, so neutrals keep their tone.
+        let scan_matrix = match (&engine, params.scanner_colour) {
+            (Engine::Spectral { lab_scan: true, core, .. }, true) if core.process == Process::Negative => {
+                Some(color::mul(&color::working_to_srgb(), &color::inverse(&to_layers).context("layer matrix is singular")?))
+            }
+            (Engine::Matrix { .. }, true) => Some(color::mul(
+                &color::XYZ_D65_TO_SRGB,
+                &color::inverse(&color::XYZ_D65_TO_REC2020).expect("invertible"),
+            )),
+            _ => None,
+        };
+
         // Scanner: base (Dmin) is white; grey-balance channels at the grey density.
         let read = |x: f64| engine.finish(engine.develop([x as f32; 3])).map(|v| v as f64);
         let dmin = read(LOG_E_MAX);
@@ -644,6 +683,7 @@ impl FilmModel {
             t_black: 10f32.powf(-p.scan.black_density as f32),
             inv_gamma: (1.0 / p.scan.gamma.max(0.1)) as f32,
             scan_wb: p.scan.white_balance.map(|v| v as f32),
+            scan_matrix: scan_matrix.map(|m| m.map(|r| r.map(|v| v as f32))),
             grain_sigma: grain_sigma as f32,
             hal_gain: (params.halation.clamp(0.0, 2.0) * HALATION_GAIN) as f32,
             hal_sigma: (p.halation.radius_px.max(0.5) * k / f) as f32,
@@ -693,12 +733,16 @@ impl FilmModel {
 
     /// Scanner: integral density -> display-linear value in [0, 1].
     pub fn scan(&self, d: [f32; 3]) -> [f32; 3] {
-        [0, 1, 2].map(|i| {
+        let v = [0, 1, 2].map(|i| {
             let (off, scale) = self.balance[i];
             let t = 10f32.powf(-(d[i] * scale + off));
-            let v = ((t - self.t_black) / (self.t_white - self.t_black)).clamp(0.0, 1.0);
-            (v.powf(self.inv_gamma) * self.scan_wb[i]).clamp(0.0, 1.0)
-        })
+            (t - self.t_black) / (self.t_white - self.t_black)
+        });
+        let v = match &self.scan_matrix {
+            Some(m) => into_gamut([0, 1, 2].map(|r| m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2])),
+            None => v,
+        };
+        [0, 1, 2].map(|i| (v[i].clamp(0.0, 1.0).powf(self.inv_gamma) * self.scan_wb[i]).clamp(0.0, 1.0))
     }
 
     /// Projection: integral density -> light on the screen, display-linear.
@@ -1268,5 +1312,53 @@ mod tests {
         let m0 = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
         let m1 = FilmModel::new(&p, &FilmParams { grain: 0.0, highlights: -1.0, ..Default::default() }).unwrap();
         assert_eq!(m0.scan(m0.densities([grey; 3])), m1.scan(m1.densities([grey; 3])));
+    }
+}
+
+#[cfg(test)]
+mod scanner_colour_tests {
+    use super::*;
+
+    fn out(id: &str, rgb: [f32; 3], on: bool) -> [f32; 3] {
+        let p = FilmPreset::builtin(id).unwrap();
+        let m = FilmModel::new(&p, &FilmParams { grain: 0.0, scanner_colour: on, ..Default::default() }).unwrap();
+        m.scan(m.densities(rgb))
+    }
+
+    /// Spread of the brightest and darkest channel in log10: a saturation measure.
+    fn spread(c: [f32; 3]) -> f32 {
+        let (hi, lo) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]).max(1e-4));
+        (hi / lo).log10()
+    }
+
+    #[test]
+    fn scanner_colour_keeps_greys_and_restores_saturation() {
+        // The yellow of the Porsche in sample L1003745 (working ProPhoto, linear).
+        let yellow = [0.385, 0.387, 0.132];
+        for id in ["portra400", "ektar100", "gold200", "ultramax400", "portra800", "kodachrome64"] {
+            for g in [0.03, 0.12, 0.4] {
+                let (a, b) = (out(id, [g; 3], true), out(id, [g; 3], false));
+                // Greys keep their tone. A tint the film already has (Gold's
+                // warm shadows, Kodachrome's red ones) is a colour too, so it
+                // gets somewhat stronger, but no more than double.
+                let y = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+                assert!((y(a) - y(b)).abs() < 0.03 * y(b), "{id}: grey {g}: {a:?} vs {b:?}");
+                assert!(spread(a) < spread(b) * 2.0 + 0.01, "{id}: grey {g} tinted: {a:?} vs {b:?}");
+            }
+            let (on, off) = (out(id, yellow, true), out(id, yellow, false));
+            assert!(spread(on) > spread(off) * 1.15, "{id}: {on:?} not more saturated than {off:?}");
+        }
+        // Slides viewed through their dyes are untouched.
+        assert_eq!(out("ektachrome-e100", yellow, true), out("ektachrome-e100", yellow, false));
+    }
+
+    #[test]
+    fn into_gamut_keeps_luminance_and_clears_negatives() {
+        let y = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let src = [0.8, 0.6, -0.1];
+        let c = into_gamut(src);
+        assert!(c.iter().all(|v| *v >= -1e-6), "{c:?}");
+        assert!((y(c) - y(src)).abs() < 1e-5);
+        assert_eq!(into_gamut([0.2, 0.3, 0.4]), [0.2, 0.3, 0.4]);
     }
 }
