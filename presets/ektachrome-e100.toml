@@ -188,3 +188,28 @@ frequencies = [3, 5, 7, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80]
 red = [96.2, 90.7, 87, 82, 72, 67.6, 56.5, 47.3, 31.5, 23.1, 16.6, 12.2, 8.3]
 green = [98.4, 95.6, 93.5, 90.3, 81.8, 80.2, 69.7, 62, 47, 36.6, 30.2, 24.2, 18.7]
 blue = [96.5, 95.7, 94.7, 94.7, 86.4, 85.8, 75.2, 70.1, 55.8, 46, 39.8, 34.1, 28.9]
+
+# Push and pull. E-4000 gives push 1 as EI 200 with 8 minutes in the first
+# developer, and says a push raises contrast. Kodak publishes no push curves
+# for E100, so these are modelled. A longer first developer makes the film
+# a full stop faster per push (so grey exposed at the push rating stays at
+# its normal density, about 1.13), steeper about that grey, and the blacks
+# thinner. The pull is the reverse. Shown as "modelled" in the app.
+
+[[datasheet.development]]
+push = -1
+label = "Pull 1 (EI 50)"
+source = "modelled: shorter first developer"
+model = { contrast = [0.88, 0.88, 0.88], shift = [-0.301, -0.301, -0.301], pivot = 1.13 }
+
+[[datasheet.development]]
+push = 1
+label = "Push 1 (EI 200)"
+source = "E-4000: EI 200, 8 min first developer; curves modelled"
+model = { contrast = [1.12, 1.12, 1.12], shift = [0.301, 0.301, 0.301], pivot = 1.13, max_density_drop = 0.15 }
+
+[[datasheet.development]]
+push = 2
+label = "Push 2 (EI 400)"
+source = "modelled: longer first developer"
+model = { contrast = [1.25, 1.25, 1.25], shift = [0.602, 0.602, 0.602], pivot = 1.13, max_density_drop = 0.35 }

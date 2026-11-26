@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Push and pull development.** A new **Development** menu (CLI: `--push <stops>`, negative to
+  pull) rates the film faster or slower and develops it to match: pushes get contrastier and lose
+  shadow detail, pulls get softer. Exposure follows the rating, and the lab scanner keeps its
+  normal-development setup so the push shows.
+  - Tri-X 400 uses Kodak's measured D-76 curves from F-4017: pull 1 (6 min), push 1 (normal
+    development at EI 800), push 2 (10 min) and push 3 (12 min).
+  - Portra 400, Ektar 100, Gold 200 and Ultramax 400 have pull 1, push 1 and push 2, **modelled**
+    on the measured Portra 800 push curves (E-4040), since Kodak publishes none for these films.
+  - Ektachrome E100 has pull 1, push 1 (Kodak's EI 200 / 8 min first developer) and push 2, with
+    modelled curves: steeper about grey and thinner blacks.
+  - Kodachrome 64 has none: Kodak recommends against pushing it.
+  - Modelled developments are labelled "modelled" in the menu, and its (i) explains the sources.
 - **A new look for the app.** The library is a strip of slide film: frames sit between sprocket
   holes with their frame number printed along the edge, and the frame you're editing is outlined.
   Everything around the photo is now strictly neutral grey, so nothing on screen tints how you judge

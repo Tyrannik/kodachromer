@@ -45,6 +45,8 @@ Optional **halation**, the red glow around bright lights that film without an an
   or as an optical print on Endura Premier paper (E-4070).
 - **Tri-X 400 in black and white**, from Kodak's F-4017: its D-76 curve, panchromatic sensitivity,
   MTF and rms granularity, shown as a lab scan of the negative.
+- **Push and pull development:** Tri-X uses Kodak's measured push curves; the colour films use
+  pushes modelled on Kodak's measured Portra 800 push data, labelled "modelled" in the app.
 - **Per-image controls:** exposure, warmth, tint, highlights, halation, sharpen, grain, grain size.
   Double-click any slider to reset it.
 - **Tune the film itself:** brightness, contrast, saturation, shadow lift, black depth, scanner

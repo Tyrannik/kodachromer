@@ -96,6 +96,15 @@ first used, and cached:
    by its slope there (so the film's own toe and shoulder are kept), and maps the result through a
    logistic tone curve (`LabScan` in `spectral.rs`: grey at density 0.70, mid contrast 1.15, max
    2.4). It is softer than paper, so the negative's highlight latitude survives.
+   **Push and pull.** `[[datasheet.development]]` entries list the processes a film supports
+   (`push` in stops, a `label` and a `source`). Each gives measured `curves` (Tri-X from F-4017),
+   a `model`, or neither (normal development, rated faster). A model derives each channel's curve
+   from normal development as `pivot + contrast * (D(log_h + shift) - pivot)`, easing back to the
+   film's minimum density below the pivot and optionally capping the maximum lower
+   (`max_density_drop`). The C-41 values are fitted to Portra 800's measured Status M push 1 and
+   push 2 curves (E-4040; RMS under 0.03 D); E100's are estimates, rated at Kodak's EI. The film is
+   rated `push` stops faster (`log_h_ref - push * log10 2`); the lab scanner keeps the slope of
+   normal development so the push's contrast shows, and balances grey on the film actually scanned.
 4. **Viewing.** Transmittance (or reflectance) spectra under D50 with the CIE 1931 observer give
    XYZ, held in a 41³ table of log XYZ over dye amounts. That is adapted to D65 (Bradford), shown as
    linear sRGB with the film base or paper white as white, and handed to the same scanner stage as
@@ -127,6 +136,11 @@ and the print grey aim are not in the datasheets; both are marked as estimates i
 - Kodak publication **F-4017**, *KODAK PROFESSIONAL TRI-X 320 and 400 Films* (12/2016): 400TX
   characteristic curve (diffuse visual, D-76, 8 min large tank), spectral sensitivity, MTF,
   diffuse rms granularity.
+- Kodak publication **E-4040**, *KODAK PROFESSIONAL PORTRA 800 Film* (2025): Status M curves at
+  EI 800 normal, EI 1600 (push 1) and EI 3200 (push 2), used to fit the colour negative push model.
+  Other push sources checked: E-116 (Ektapress PJ400/PJ800 push 1 and 2 curves), E-147 (Ektachrome
+  P1600 push 2, Status A), E-28 (E200 push times only) and E-55/E-88 (Kodachrome 200 push ratings;
+  Kodak does not recommend pushing Kodachrome 64).
 - Kodak publication **E-4070**, *KODAK PROFESSIONAL ENDURA PREMIER Paper*: characteristic curves
   (Status A reflection), spectral sensitivity, spectral dye density.
 - **ISO 5-3:1995** (ANSI/NAPM IT2.18), Tables 3 and 4: Status A and Status M spectral products.
@@ -146,7 +160,7 @@ the orientation maths used by zoom.
 
 ## Ideas / roadmap
 
-- More films as data presets (Kodachrome 25, Portra 160, T-Max 100/400; Tri-X's other development times as push/pull); the catalogue of
+- More films as data presets (Kodachrome 25, Portra 160, T-Max 100/400, Portra 800 with its measured push curves); the catalogue of
   Kodak datasheets is a good starting point.
 - Highlight reconstruction for clipped raw channels.
 - Lens corrections (M9 vignetting/colour shading), crop and straighten.

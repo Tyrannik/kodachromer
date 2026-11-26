@@ -46,6 +46,9 @@ pub struct Edit {
     pub halation: f32,
     /// Scanned or projected slide.
     pub output: OutputMode,
+    /// Push (+) or pull (-) processing in stops; 0 = normal. Only values
+    /// the film's datasheet lists are used (others render as normal).
+    pub push: i32,
 }
 
 impl Default for Edit {
@@ -64,6 +67,7 @@ impl Default for Edit {
             // Kodachrome had an anti-halation backing, so off by default.
             halation: 0.0,
             output: OutputMode::Scan,
+            push: 0,
         }
     }
 }
@@ -267,6 +271,7 @@ fn render_framed(
                 highlights: edit.highlights as f64,
                 sensor_white: edit.fit_highlights.then(|| cam.clip_white()),
                 halation: edit.halation as f64,
+                push: if preset.supports_push(edit.push) { edit.push } else { 0 },
                 output: edit.output,
                 pixel_scale,
                 sensor_pixel_um: cam.pixel_pitch_um,
