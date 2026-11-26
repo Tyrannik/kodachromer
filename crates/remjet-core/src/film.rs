@@ -162,6 +162,7 @@ pub const PORTRA_400: &str = include_str!("../../../presets/portra400.toml");
 pub const EKTAR_100: &str = include_str!("../../../presets/ektar100.toml");
 pub const GOLD_200: &str = include_str!("../../../presets/gold200.toml");
 pub const ULTRAMAX_400: &str = include_str!("../../../presets/ultramax400.toml");
+pub const PORTRA_800: &str = include_str!("../../../presets/portra800.toml");
 pub const TRIX_400: &str = include_str!("../../../presets/trix400.toml");
 
 impl FilmPreset {
@@ -201,6 +202,7 @@ impl FilmPreset {
             "ektar100" => Self::from_toml(EKTAR_100),
             "gold200" => Self::from_toml(GOLD_200),
             "ultramax400" => Self::from_toml(ULTRAMAX_400),
+            "portra800" => Self::from_toml(PORTRA_800),
             "trix400" => Self::from_toml(TRIX_400),
             _ => bail!("unknown built-in preset '{id}' (available: kodachrome64, ektachrome-e100, portra400, ektar100, gold200, ultramax400, trix400)"),
         }

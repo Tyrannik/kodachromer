@@ -1721,9 +1721,9 @@ fn subhead_info(ui: &mut egui::Ui, text: &str, info: &str) {
 
 const DEVELOPMENT_INFO: &str = "Push or pull processing: the film is rated faster (push) or slower (pull) and developed to match. \
     Pushes get contrastier and lose shadow detail; pulls get softer. Exposure follows the rating. \
-    Tri-X uses Kodak's measured development curves. Kodak published no push curves for the colour films, so theirs are \
-    marked \"modelled\": the negatives are fitted to Kodak's measured Portra 800 pushes, and E100 is an estimate at \
-    Kodak's push rating. Kodak advises against pushing Kodachrome 64, so it has none.";
+    Tri-X and Portra 800 use Kodak's measured development curves. Kodak published no push curves for the other colour \
+    films, so theirs are marked \"modelled\": the negatives are fitted to Portra 800's measured pushes, and E100 is an \
+    estimate at Kodak's push rating. Kodak advises against pushing Kodachrome 64, so it has none.";
 
 const OUTPUT_INFO_NEGATIVE: &str = "How the negative is turned into a picture. \
     Lab scan: as a minilab scanner reads it, soft and with the negative's long highlight latitude. \

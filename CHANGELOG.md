@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **New colour negative: Portra 800.** Built from Kodak publication E-4040 (2025) like Portra 400:
+  characteristic curves, layer sensitivities, the negative's measured spectra and MTF. Its
+  **Development** menu offers push 1 (EI 1600) and push 2 (EI 3200) from Kodak's own measured
+  curves, not modelled. The push curves' slightly different fog per layer gives pushed shadows a
+  faint cool-magenta shift, as Kodak's data shows. Grain is estimated from Kodak's Print Grain
+  Index (48 at 4x6).
 - **Push and pull development.** A new **Development** menu (CLI: `--push <stops>`, negative to
   pull) rates the film faster or slower and develops it to match: pushes get contrastier and lose
   shadow detail, pulls get softer. Exposure follows the rating, and the lab scanner keeps its
