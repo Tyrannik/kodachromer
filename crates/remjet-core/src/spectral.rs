@@ -592,6 +592,56 @@ impl Printer {
     }
 }
 
+/// A lab scanner reading a colour negative, the way a minilab scanner
+/// (Frontier, Noritsu) does: it measures the negative's printing densities
+/// above the orange mask, grey-balances each channel at the reference grey,
+/// inverts, and applies its own gentle tone curve. The film's own toe and
+/// shoulder are kept (densities are inverted linearly, not through the
+/// film's curve); the scanner curve is softer than paper, with a long
+/// highlight shoulder, so the negative's highlight latitude survives.
+#[derive(Debug, Clone)]
+pub struct LabScan {
+    gain: Vec3,
+    dmin: Vec3,
+    /// Printing density (above base) of the reference grey, per channel.
+    p_ref: Vec3,
+    /// Printing density per log10 exposure at the reference grey.
+    slope: Vec3,
+    /// Scanner tone curve: output density = dmax / (1 + exp(k (rel - c))).
+    k: f64,
+    c: f64,
+}
+
+/// Scanner tone curve: deepest output density, density the reference grey
+/// lands at (about an 18-20% grey), and mid-tone contrast in output density
+/// per log10 exposure. Softer than a print (paper runs at about 1.5-1.7).
+const LAB_SCAN_DMAX: f64 = 2.4;
+const LAB_SCAN_GREY: f64 = 0.70;
+const LAB_SCAN_GAMMA: f64 = 1.15;
+
+impl LabScan {
+    fn new(develop: &Table, gain: Vec3, dmin: Vec3, log_h_ref: f64) -> Self {
+        let p = |c: usize, x: f64| gain[c] * (develop.eval(c, x) - dmin[c]);
+        let p_ref = [0, 1, 2].map(|c| p(c, log_h_ref));
+        let slope = [0, 1, 2].map(|c| ((p(c, log_h_ref + 0.15) - p(c, log_h_ref - 0.15)) / 0.3).max(0.05));
+        // Logistic through (0, LAB_SCAN_GREY) with slope -LAB_SCAN_GAMMA there.
+        let e0 = LAB_SCAN_DMAX / LAB_SCAN_GREY - 1.0;
+        let k = LAB_SCAN_GAMMA * (1.0 + e0) * (1.0 + e0) / (LAB_SCAN_DMAX * e0);
+        let c = -e0.ln() / k;
+        Self { gain, dmin, p_ref, slope, k, c }
+    }
+
+    /// Display-linear scanner RGB (white = 1) for Status M densities.
+    pub fn rgb(&self, state: [f32; 3]) -> [f32; 3] {
+        [0, 1, 2].map(|c| {
+            let p = self.gain[c] * (state[c] as f64 - self.dmin[c]);
+            let rel = (p - self.p_ref[c]) / self.slope[c];
+            let d = LAB_SCAN_DMAX / (1.0 + (self.k * (rel - self.c)).exp());
+            10f64.powf(-d) as f32
+        })
+    }
+}
+
 /// Everything derived from a datasheet, computed once per preset.
 #[derive(Debug)]
 pub struct Core {
@@ -601,6 +651,8 @@ pub struct Core {
     /// Per log exposure: dye amounts (reversal) or Status M density (negative).
     pub develop: Table,
     pub printer: Option<Printer>,
+    /// Negatives: the lab-scanner alternative to printing.
+    pub lab_scan: Option<LabScan>,
     pub viewer: Viewer,
     /// Fitted layer spreads (R, G, B), if the datasheet has MTF data.
     pub spread: Option<[Spread; 3]>,
@@ -648,7 +700,7 @@ impl Core {
                 // White: the clear film (base + minimum dye), at the top of the curves.
                 let white = develop.y[develop.y.len() - 1];
                 let viewer = Viewer::new(&stack, develop.min().min(0.0), develop.max() + 0.3, &white);
-                Ok(Self { process, to_layers, develop, printer: None, viewer, spread })
+                Ok(Self { process, to_layers, develop, printer: None, lab_scan: None, viewer, spread })
             }
             Process::Negative => {
                 let p = print.expect("validated");
@@ -727,7 +779,8 @@ impl Core {
                     let s = color::mul_vec(&ji, &r);
                     printer.lights = [0, 1, 2].map(|c| printer.lights[c] + s[c].clamp(-0.5, 0.5));
                 }
-                Ok(Self { process, to_layers, develop, printer: Some(printer), viewer, spread })
+                let lab_scan = LabScan::new(&develop, gain, dmin, log_h_ref);
+                Ok(Self { process, to_layers, develop, printer: Some(printer), lab_scan: Some(lab_scan), viewer, spread })
             }
         }
     }
@@ -883,7 +936,8 @@ mod datasheet_tests {
     #[test]
     fn portra_grey_prints_neutral_at_the_aim_density() {
         let (p, c) = core("portra400");
-        let m = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
+        let output = crate::film::OutputMode::Print;
+        let m = FilmModel::new(&p, &FilmParams { grain: 0.0, output, ..Default::default() }).unwrap();
         let g = p.exposure.grey_linear as f32;
         let d = m.densities([g; 3]);
         let aim = (p.print.unwrap().grey_density - c.viewer.white_density) as f32;
@@ -897,15 +951,21 @@ mod datasheet_tests {
     }
 
     #[test]
-    fn every_negative_prints_its_grey_neutral_at_the_aim() {
+    fn every_negative_scans_and_prints_its_grey_neutral() {
+        use crate::film::OutputMode;
         for id in ["portra400", "ektar100", "gold200", "ultramax400"] {
             let (p, c) = core(id);
-            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
-            let d = m.densities([p.exposure.grey_linear as f32; 3]);
+            let g = p.exposure.grey_linear as f32;
+            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, output: OutputMode::Print, ..Default::default() }).unwrap();
+            let d = m.densities([g; 3]);
             let aim = (p.print.as_ref().unwrap().grey_density - c.viewer.white_density) as f32;
             assert!(d.iter().all(|v| (v - aim).abs() < 0.02), "{id}: {d:?} vs {aim}");
             let spread = d.iter().cloned().fold(f32::MIN, f32::max) - d.iter().cloned().fold(f32::MAX, f32::min);
-            assert!(spread < 0.003, "{id}: grey not neutral: {d:?}");
+            assert!(spread < 0.003, "{id}: printed grey not neutral: {d:?}");
+            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, output: OutputMode::Scan, ..Default::default() }).unwrap();
+            let o = m.scan(m.densities([g; 3]));
+            let spread = o.iter().cloned().fold(f32::MIN, f32::max) - o.iter().cloned().fold(f32::MAX, f32::min);
+            assert!(spread < 0.01, "{id}: scanned grey not neutral: {o:?}");
         }
     }
 
@@ -929,14 +989,36 @@ mod datasheet_tests {
     }
 
     #[test]
-    fn negatives_are_always_viewed_as_prints() {
+    fn negatives_are_scanned_or_printed_never_projected() {
+        use crate::film::OutputMode;
         let p = FilmPreset::builtin("portra400").unwrap();
         let g = p.exposure.grey_linear as f32;
-        let img = crate::develop::LinearImage { width: 8, height: 8, pixels: vec![[g; 3]; 64], cct: 5000.0 };
+        let img = crate::develop::LinearImage { width: 8, height: 8, pixels: vec![[g * 4.0; 3]; 64], cct: 5000.0 };
         let render = |output| {
             let m = FilmModel::new(&p, &FilmParams { grain: 0.0, output, ..Default::default() }).unwrap();
             m.apply(&img, 0).pixels
         };
-        assert_eq!(render(crate::film::OutputMode::Scan), render(crate::film::OutputMode::Projection));
+        assert_eq!(render(OutputMode::Scan), render(OutputMode::Projection));
+        assert_ne!(render(OutputMode::Scan), render(OutputMode::Print), "lab scan and print should differ");
+    }
+
+    #[test]
+    fn lab_scan_keeps_more_highlight_separation_than_the_print() {
+        use crate::film::OutputMode;
+        let p = FilmPreset::builtin("portra400").unwrap();
+        let g = p.exposure.grey_linear as f32;
+        let tone = |output, stops: f32| {
+            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, output, ..Default::default() }).unwrap();
+            m.scan(m.densities([g * 2f32.powf(stops); 3]))
+        };
+        for output in [OutputMode::Scan, OutputMode::Print] {
+            let grey = tone(output, 0.0);
+            let spread = grey.iter().cloned().fold(f32::MIN, f32::max) - grey.iter().cloned().fold(f32::MAX, f32::min);
+            assert!(spread < 0.01, "{output:?}: grey not neutral: {grey:?}");
+        }
+        // The camera's top stop and a half (+1.5 .. +3 stops over grey), with
+        // the default highlight fit.
+        let range = |o| tone(o, 3.0)[1] - tone(o, 1.5)[1];
+        assert!(range(OutputMode::Scan) > 1.5 * range(OutputMode::Print), "{} vs {}", range(OutputMode::Scan), range(OutputMode::Print));
     }
 }
