@@ -1216,7 +1216,8 @@ impl FilmApp {
         let dirty = tune.working != tune.saved;
         let title = if dirty { format!("Tune {} (unsaved)", tune.working.name) } else { format!("Tune {}", tune.working.name) };
         let mut action = None;
-        egui::CollapsingHeader::new(egui::RichText::new(title).font(egui::FontId::new(19.0, theme::condensed()))).id_salt("tune").show(ui, |ui| {
+        egui::CollapsingHeader::new(egui::RichText::new(title).font(egui::FontId::new(19.0, theme::condensed()))).id_salt("tune").show_unindented(ui, |ui| {
+            // Unindented, so the tuning sliders share the Adjust label column.
             theme::hint(ui, "Changes the film itself, for every image that uses it. Double-click a slider for the Kodak-data value.");
             let w = &mut tune.working;
             let r = tune.reference.clone().unwrap_or_else(|| tune.saved.clone());
@@ -1642,9 +1643,18 @@ fn subhead(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).font(egui::FontId::new(15.0, theme::condensed())).color(theme::TEXT_WEAK));
 }
 
+/// Tuning slider. `range` sets the span; the slider is centred on `default`
+/// (the Kodak-data value), so an untouched film shows every handle in the
+/// middle. Values that can't go negative keep their floor at zero.
 fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, text: &str, default: f64) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let half = (hi - lo) / 2.0;
+    let floor = if lo >= 0.0 { 0.0 } else { f64::NEG_INFINITY };
+    let round = |x: f64| (x * 1000.0).round() / 1000.0;
+    // Always include the current value: the slider clamps whatever it shows.
+    let lo = round((default - half).max(floor)).min(*value) as f32;
+    let hi = round(default + half).max(*value) as f32;
     let mut v = *value as f32;
-    let (lo, hi) = (*range.start() as f32, *range.end() as f32);
     // Fine steps: egui snaps the value to the step every frame, and a coarser
     // step would quietly change a preset (e.g. a 0.003 flare) just by showing it.
     slider(ui, true, &mut v, lo..=hi, 0.001, text, default as f32);
@@ -1659,8 +1669,11 @@ fn slider(ui: &mut egui::Ui, enabled: bool, value: &mut f32, range: std::ops::Ra
     let resp = ui
         .add_enabled_ui(enabled, |ui| {
             row(ui, text, |ui| {
-                let value_box = 52.0;
-                ui.spacing_mut().slider_width = (ui.available_width() - value_box - ui.spacing().item_spacing.x).max(60.0);
+                // One width for every value box, wide enough for "-1.000", so
+                // rails and boxes line up whatever the value's length.
+                const VALUE_BOX: f32 = 58.0;
+                ui.spacing_mut().interact_size.x = VALUE_BOX;
+                ui.spacing_mut().slider_width = (ui.available_width() - VALUE_BOX - ui.spacing().item_spacing.x).max(60.0);
                 let decimals = if step >= 1.0 { 0 } else if step < 0.01 { 3 } else { 2 };
                 ui.add(egui::Slider::new(value, range).step_by(step).fixed_decimals(decimals))
             })
