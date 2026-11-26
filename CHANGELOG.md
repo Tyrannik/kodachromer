@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.6
 
 - **Three new colour negatives: Ektar 100, Gold 200 and Ultramax 400.** Each is built from its own
   Kodak datasheet (E-4046, E-7022, E-7023) the same way as Portra 400: characteristic curves,
