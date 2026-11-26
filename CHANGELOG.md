@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Compare views.** The bar under the photo has a **Compare** switch (or press **C** to cycle):
+  **Split** shows one image with a divider you drag, the comparison on the left and your edit on
+  the right; **Side by side** shows the two next to each other, zoomed and panned together (click
+  for 100%, then drag). Compare **with** the frame before the film look, or with any other film
+  using the same adjustments. **Use film** switches the frame to the compared film and keeps the old
+  one on the other side, so you can go back and forth. Hold **B** for before still works anywhere.
+- **Export a whole shoot in one look.** The export panel's new **Look** menu sets what the export
+  buttons (this frame, selected, edited, whole folder) render with: each frame's own edit (as
+  before), the settings of the frame you're editing for all of them, or any film with each frame's
+  own exposure and colour adjustments. Saved edits aren't changed. **Film in file name** writes
+  `L1002695_portra400.jpg`, so one shoot can be exported in several looks into the same folder.
+  The CLI gets the same as `export --film <id> --film-in-name`.
 - **Saturated colours no longer wash out.** Bright, saturated colours (a yellow car most of all)
   came out pale and creamy on the colour negatives and Kodachrome 64. The cause was a missing
   scanner step: the film's layers see colour through broad, overlapping sensitivities, and their
