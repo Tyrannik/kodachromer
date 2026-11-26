@@ -77,6 +77,11 @@ first used, and cached:
    Status M. Paper log exposure is printer light minus printing density; printer lights are solved
    so the reference grey prints neutral at `print.grey_density`. The paper's dye amounts come from
    its Status A curves and dye spectra, as in step 2, over a flat base.
+   **Lab scan (the default output for negatives).** Instead of printing, a minilab-style scanner
+   reads the same printing densities above the mask, normalises each channel at the reference grey
+   by its slope there (so the film's own toe and shoulder are kept), and maps the result through a
+   logistic tone curve (`LabScan` in `spectral.rs`: grey at density 0.70, mid contrast 1.15, max
+   2.4). It is softer than paper, so the negative's highlight latitude survives.
 4. **Viewing.** Transmittance (or reflectance) spectra under D50 with the CIE 1931 observer give
    XYZ, held in a 41³ table of log XYZ over dye amounts. That is adapted to D65 (Bradford), shown as
    linear sRGB with the film base or paper white as white, and handed to the same scanner stage as
@@ -121,7 +126,6 @@ the orientation maths used by zoom.
 
 - More films as data presets (Kodachrome 25, Ektar 100, Portra 160, Tri-X); the catalogue of
   Kodak datasheets is a good starting point.
-- A *scanned negative* output for Portra alongside the optical print.
 - Highlight reconstruction for clipped raw channels.
 - Lens corrections (M9 vignetting/colour shading), crop and straighten.
 - Embedded ICC profile in exports; TIFF export.

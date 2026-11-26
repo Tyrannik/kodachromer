@@ -2,7 +2,7 @@
 //!
 //!   remjet-cli info   <files or folders...>
 //!   remjet-cli render <files or folders...> --out <folder> [--half] [--ev <stops>]
-//!                   [--preset kodachrome64 | ektachrome-e100 | portra400 | <preset.toml>] [--grain <amount>] [--no-fit]
+//!                   [--preset kodachrome64 | ektachrome-e100 | portra400 | <preset.toml>] [--grain <amount>] [--no-fit] [--print]
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -13,7 +13,7 @@ use remjet_core::edit::ExportOptions;
 use remjet_core::film::{FilmModel, FilmParams, FilmPreset};
 use remjet_core::{output, raw};
 
-const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | portra400 | <preset.toml>]\n                  [--grain <amount>] [--no-fit]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each file's saved app edit; default output is <folder>/exports)";
+const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | portra400 | <preset.toml>]\n                  [--grain <amount>] [--no-fit] [--print]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each file's saved app edit; default output is <folder>/exports)";
 
 /// Batch export using the app's sidecar edits.
 fn export(args: &[String]) -> Result<()> {
@@ -161,6 +161,7 @@ fn render(args: &[String]) -> Result<()> {
             // With a preset, exposure is applied as film exposure (log domain).
             "--ev" => film_params.exposure_ev = it.next().context("--ev needs a value")?.parse()?,
             "--no-fit" => film_params.sensor_white = None,
+            "--print" => film_params.output = remjet_core::film::OutputMode::Print,
             "--grain" => film_params.grain = it.next().context("--grain needs a value")?.parse()?,
             "--preset" => {
                 let p = it.next().context("--preset needs a name or .toml path")?;
