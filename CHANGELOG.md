@@ -2,6 +2,20 @@
 
 ## 0.1.0-alpha.7
 
+- **Five new films from Kodak datasheets**, each digitised from its own publication's vector plots
+  and built on the same spectral models as the existing films:
+  - **Portra 160** (E-4051, 2025), a colour negative like Portra 400: lab scan by default, Endura
+    print optional. Grain estimated from its Print Grain Index (28 at 4x6). Pull 1, push 1 and
+    push 2 are modelled like Portra 400's.
+  - **T-Max 100** (F-4016) and **T-Max 400** (F-4043) in black and white, with D-76 curves,
+    panchromatic sensitivity, MTF and rms granularity (8 and 10). T-Max 400's pull 1, push 1 and
+    push 2 use Kodak's measured 6-, 8- and 11-minute curves. T-Max 100's pushes use its measured
+    7 1/2- and 10-minute curves; it has no shorter curve, so its pull is modelled (marked).
+  - **Ektachrome E100VS** (E-163) and **Ektachrome E200** (E-28), both discontinued slide films.
+    Their pushes are modelled (marked); E200's follow Kodak's push table up to EI 800 with
+    a gentler contrast rise. E100VS's datasheet curves are close to E100's, so it renders only a
+    little more saturated: Kodak's "very saturated" look came largely from interlayer effects the
+    datasheet doesn't plot.
 - **Saturated colours no longer wash out.** Bright, saturated colours (a yellow car most of all)
   came out pale and creamy on the colour negatives and Kodachrome 64. The cause was a missing
   scanner step: the film's layers see colour through broad, overlapping sensitivities, and their

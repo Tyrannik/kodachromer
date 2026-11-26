@@ -1,0 +1,150 @@
+# Kodak Professional T-Max 100 (100TMX) developed in D-76 — black-and-white
+# negative, lab-scanned.
+#
+# Built from Kodak publication F-4016 (KODAK PROFESSIONAL T-MAX 100 Film,
+# technical data, June 2018), digitised from the PDF's vector plots:
+#   - characteristic curve: diffuse visual density, KODAK PROFESSIONAL D-76
+#     Developer, small tank, 20 °C, 6 minutes. Of the three published times
+#     (6, 7 1/2 and 10 min) this is the closest to Kodak's printing aim of
+#     contrast index 0.56 (and to the 6 1/2 min the small-tank table gives).
+#   - spectral sensitivity (log sensitivity, the curve for D = 1.0 above
+#     D-min, as for Tri-X)
+#   - MTF (D-76, diffuse visual)
+#   - diffuse rms granularity: 8 (D-76)
+# One silver image, so every channel shares the same curve and the result is
+# exactly neutral. Like Tri-X, the negative is viewed through the lab scanner
+# used for the colour negatives (see crates/remjet-core/src/spectral.rs).
+# T-Max's tabular T-GRAIN emulsion shows as a straighter, longer curve and a
+# higher MTF than Tri-X's.
+
+id = "tmax100"
+name = "T-Max 100"
+version = 1
+process = "monochrome"
+
+[exposure]
+# Scene-linear camera value treated as an 18% grey card (app calibration).
+grey_linear = 0.12
+# Its exposure on the film: ISO 100 with standard meter calibration,
+# H = 8 / S lux-seconds -> log10(0.08). F-4016 gives no Log H Ref.
+log_h_ref = -1.10
+
+[look]
+interimage = 0.0
+contrast = 1.0
+flare = 0.004
+
+[scan]
+black_density = 3.0
+neutral_balance = 0.0
+gamma = 1.0
+white_balance = [1.0, 1.0, 1.0]
+
+[grain]
+# Diffuse rms granularity (x1000, 48 µm aperture, at net density 1.0) from
+# F-4016 (D-76). Silver grain has no colour, so it is the same in every
+# channel.
+rms_granularity = 8.0
+correlation = 1.0
+blur_px = 1.1
+amount = 0.4
+
+[halation]
+# Glow from light reflecting off the film base (per-image Halation slider;
+# 0 by default). Neutral for a black-and-white film.
+radius_px = 40.0
+threshold_stops = 1.75
+tint = [1.0, 1.0, 1.0]
+
+[datasheet]
+densitometry = "diffuse_visual"
+
+# Diffuse visual density vs log10 exposure (lux-seconds), D-76 6 min.
+[datasheet.curves.neutral]
+start = -3.10
+step = 0.05
+values = [
+  0.209, 0.209, 0.209, 0.209, 0.209, 0.210, 0.210, 0.211, 0.212, 0.213,
+  0.214, 0.216, 0.218, 0.221, 0.224, 0.229, 0.236, 0.244, 0.254, 0.266,
+  0.279, 0.295, 0.313, 0.332, 0.354, 0.376, 0.401, 0.427, 0.455, 0.483,
+  0.512, 0.541, 0.570, 0.599, 0.627, 0.655, 0.683, 0.711, 0.740, 0.768,
+  0.797, 0.826, 0.855, 0.884, 0.914, 0.942, 0.971, 0.999, 1.026, 1.053,
+  1.080, 1.106, 1.133, 1.160, 1.187, 1.213, 1.239, 1.265, 1.290, 1.317,
+  1.345, 1.373, 1.401, 1.430, 1.458, 1.486, 1.514, 1.543, 1.572, 1.602,
+  1.632, 1.662, 1.692, 1.723, 1.754, 1.784,
+]
+
+# Log10 spectral sensitivity vs wavelength (nm), D = 1.0 above D-min.
+[datasheet.sensitivity.neutral]
+start = 400.00
+step = 5
+values = [
+  0.500, 0.498, 0.489, 0.469, 0.446, 0.424, 0.402, 0.382, 0.362, 0.342,
+  0.318, 0.288, 0.254, 0.219, 0.182, 0.145, 0.106, 0.070, 0.040, 0.020,
+  0.010, 0.011, 0.020, 0.034, 0.053, 0.072, 0.089, 0.099, 0.104, 0.109,
+  0.108, 0.093, 0.069, 0.049, 0.034, 0.023, 0.020, 0.030, 0.041, 0.047,
+  0.030, -0.018, -0.089, -0.169, -0.243, -0.299, -0.338, -0.370, -0.401, -0.452,
+  -0.568, -0.782, -1.043, -1.319, -1.596,
+]
+
+[datasheet.mtf]
+# Response (%) vs spatial frequency (cycles/mm).
+frequencies = [3, 5, 7, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80]
+neutral = [107.9, 111.4, 113.2, 114.7, 115.9, 116.1, 115.4, 113.8, 108.8, 101.6, 93.7, 85.8, 78.2]
+
+# Push and pull processing (per-image Development menu). F-4016 publishes
+# D-76 small-tank curves (20 °C) for 6, 7 1/2 and 10 minutes. Its push table
+# gives D-76 times of 6 1/2 min for EI 200 (the normal time) and 8 1/4 min
+# for EI 400, and does not recommend D-76 for EI 800. The 7 1/2- and
+# 10-minute curves stand in for push 2 and push 3. There is no shorter
+# curve, so the pull is modelled: the measured 6 -> 7 1/2 min step
+# (contrast 1.24 about fog, 0.106 log H faster, RMS error 0.016 D) reversed.
+
+[[datasheet.development]]
+push = -1
+label = "Pull 1 (EI 50)"
+source = "modelled: the measured F-4016 D-76 6 -> 7 1/2 min step, reversed"
+model = { contrast = [0.809, 0.809, 0.809], shift = [-0.106, -0.106, -0.106] }
+
+[[datasheet.development]]
+push = 1
+label = "Push 1 (EI 200)"
+source = "F-4016: EI 200 with the normal D-76 time (6 1/2 min); 6 min curve"
+
+[[datasheet.development]]
+push = 2
+label = "Push 2 (EI 400)"
+source = "F-4016: D-76, small tank, 20 °C, 7 1/2 min (Kodak gives 8 1/4 min)"
+
+[datasheet.development.curves.neutral]
+start = -3.10
+step = 0.05
+values = [
+  0.214, 0.214, 0.215, 0.215, 0.216, 0.216, 0.217, 0.218, 0.220, 0.221,
+  0.224, 0.227, 0.231, 0.237, 0.243, 0.252, 0.262, 0.274, 0.289, 0.306,
+  0.325, 0.347, 0.372, 0.400, 0.430, 0.463, 0.498, 0.534, 0.572, 0.610,
+  0.649, 0.688, 0.728, 0.767, 0.806, 0.844, 0.882, 0.920, 0.958, 0.995,
+  1.032, 1.069, 1.106, 1.141, 1.176, 1.210, 1.244, 1.277, 1.309, 1.341,
+  1.373, 1.405, 1.436, 1.468, 1.500, 1.532, 1.564, 1.597, 1.630, 1.663,
+  1.696, 1.728, 1.759, 1.791, 1.823, 1.855, 1.886, 1.918, 1.950, 1.982,
+  2.013, 2.045, 2.076, 2.107, 2.137, 2.168,
+]
+
+[[datasheet.development]]
+push = 3
+label = "Push 3 (EI 800)"
+source = "F-4016: D-76, small tank, 20 °C, 10 min (Kodak advises T-MAX Developer at EI 800)"
+
+[datasheet.development.curves.neutral]
+start = -3.10
+step = 0.05
+values = [
+  0.224, 0.225, 0.226, 0.227, 0.228, 0.229, 0.231, 0.232, 0.235, 0.238,
+  0.242, 0.246, 0.252, 0.260, 0.269, 0.280, 0.294, 0.309, 0.328, 0.351,
+  0.377, 0.408, 0.441, 0.479, 0.518, 0.560, 0.605, 0.651, 0.698, 0.747,
+  0.797, 0.848, 0.899, 0.950, 1.000, 1.050, 1.098, 1.147, 1.195, 1.244,
+  1.292, 1.339, 1.386, 1.431, 1.476, 1.520, 1.563, 1.605, 1.647, 1.688,
+  1.728, 1.767, 1.806, 1.845, 1.883, 1.922, 1.960, 1.997, 2.033, 2.069,
+  2.104, 2.139, 2.174, 2.208, 2.243, 2.278, 2.313, 2.349, 2.385, 2.422,
+  2.460, 2.499, 2.538, 2.578, 2.617, 2.657,
+]

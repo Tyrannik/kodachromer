@@ -164,6 +164,11 @@ pub const GOLD_200: &str = include_str!("../../../presets/gold200.toml");
 pub const ULTRAMAX_400: &str = include_str!("../../../presets/ultramax400.toml");
 pub const PORTRA_800: &str = include_str!("../../../presets/portra800.toml");
 pub const TRIX_400: &str = include_str!("../../../presets/trix400.toml");
+pub const PORTRA_160: &str = include_str!("../../../presets/portra160.toml");
+pub const TMAX_100: &str = include_str!("../../../presets/tmax100.toml");
+pub const TMAX_400: &str = include_str!("../../../presets/tmax400.toml");
+pub const EKTACHROME_E100VS: &str = include_str!("../../../presets/ektachrome-e100vs.toml");
+pub const EKTACHROME_E200: &str = include_str!("../../../presets/ektachrome-e200.toml");
 
 impl FilmPreset {
     pub fn from_toml(text: &str) -> Result<Self> {
@@ -204,7 +209,15 @@ impl FilmPreset {
             "ultramax400" => Self::from_toml(ULTRAMAX_400),
             "portra800" => Self::from_toml(PORTRA_800),
             "trix400" => Self::from_toml(TRIX_400),
-            _ => bail!("unknown built-in preset '{id}' (available: kodachrome64, ektachrome-e100, portra400, ektar100, gold200, ultramax400, trix400)"),
+            "portra160" => Self::from_toml(PORTRA_160),
+            "tmax100" => Self::from_toml(TMAX_100),
+            "tmax400" => Self::from_toml(TMAX_400),
+            "ektachrome-e100vs" => Self::from_toml(EKTACHROME_E100VS),
+            "ektachrome-e200" => Self::from_toml(EKTACHROME_E200),
+            _ => bail!(
+                "unknown built-in preset '{id}' (available: {})",
+                crate::presets::BUILTINS.iter().map(|(id, _)| *id).collect::<Vec<_>>().join(", ")
+            ),
         }
     }
 
@@ -1335,7 +1348,7 @@ mod scanner_colour_tests {
     fn scanner_colour_keeps_greys_and_restores_saturation() {
         // The yellow of the Porsche in sample L1003745 (working ProPhoto, linear).
         let yellow = [0.385, 0.387, 0.132];
-        for id in ["portra400", "ektar100", "gold200", "ultramax400", "portra800", "kodachrome64"] {
+        for id in ["portra160", "portra400", "ektar100", "gold200", "ultramax400", "portra800", "kodachrome64"] {
             for g in [0.03, 0.12, 0.4] {
                 let (a, b) = (out(id, [g; 3], true), out(id, [g; 3], false));
                 // Greys keep their tone. A tint the film already has (Gold's

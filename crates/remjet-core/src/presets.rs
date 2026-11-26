@@ -13,12 +13,17 @@ use crate::film::FilmPreset;
 pub const BUILTINS: &[(&str, &str)] = &[
     ("kodachrome64", "Kodachrome 64"),
     ("ektachrome-e100", "Ektachrome E100"),
+    ("ektachrome-e100vs", "Ektachrome E100VS"),
+    ("ektachrome-e200", "Ektachrome E200"),
+    ("portra160", "Portra 160"),
     ("portra400", "Portra 400"),
+    ("portra800", "Portra 800"),
     ("ektar100", "Ektar 100"),
     ("gold200", "Gold 200"),
     ("ultramax400", "Ultramax 400"),
-    ("portra800", "Portra 800"),
     ("trix400", "Tri-X 400"),
+    ("tmax100", "T-Max 100"),
+    ("tmax400", "T-Max 400"),
 ];
 
 pub fn user_dir() -> Option<PathBuf> {
