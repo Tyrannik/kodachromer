@@ -9,7 +9,7 @@ How Remjet is put together, for anyone reading or extending the code.
 | `crates/remjet-core` | Everything that touches pixels: DNG decoding, colour science, the film model, grain, halation, edits/sidecars, export, EXIF. No UI. |
 | `crates/remjet` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
 | `crates/remjet-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
-| `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml`, `portra400.toml`, `ektar100.toml`, `gold200.toml` and `ultramax400.toml` (spectral model). |
+| `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml`, `portra400.toml`, `ektar100.toml`, `gold200.toml`, `ultramax400.toml` and `trix400.toml` (spectral model; Tri-X is `process = "monochrome"`). |
 | `assets/` | Icon. |
 
 ## Image pipeline
@@ -57,8 +57,8 @@ How Remjet is put together, for anyone reading or extending the code.
 
 ## Spectral film model
 
-Ektachrome E100 and the colour negatives (Portra 400, Ektar 100, Gold 200, Ultramax 400) use `spectral.rs` instead of the Kodachrome matrix model. A preset
-with `process = "reversal"` or `"negative"` carries its datasheet as `[datasheet]` (and, for a
+Ektachrome E100, the colour negatives (Portra 400, Ektar 100, Gold 200, Ultramax 400) and Tri-X 400 use `spectral.rs` instead of the Kodachrome matrix model. A preset
+with `process = "reversal"`, `"negative"` or `"monochrome"` carries its datasheet as `[datasheet]` (and, for a
 negative, its paper as `[print]`); everything else is computed from those spectra when the film is
 first used, and cached:
 
@@ -67,6 +67,11 @@ first used, and cached:
    from ProPhoto (D50) to relative layer exposure is fitted by weighted least squares; white
    exposes every layer equally. The grey card lands on `exposure.log_h_ref`: ISO speed with
    standard meter calibration for E100 (log10 8/100), the datasheet's *Log H Ref* for Portra.
+2. **Black and white.** A `monochrome` preset gives one `neutral` characteristic curve (diffuse
+   visual density), one `neutral` sensitivity and one `neutral` MTF; each is used for all three
+   channels, so layer exposures, density, grain and the scan are identical and the image is
+   exactly neutral. Its grey card uses ISO speed with standard meter calibration (log10 8/400).
+   There is no paper data, so it always goes through the lab scanner.
 2. **Reversal (E-6).** At each log exposure, Newton's method finds the cyan, magenta and yellow dye
    amounts whose combined spectrum reads as the published Status A densities through the ISO 5-3
    Status A response. A neutral exposure reproduces the curves exactly. Grain is added to the dye
@@ -110,6 +115,9 @@ and the print grey aim are not in the datasheets; both are marked as estimates i
   and of minimum density, MTF.
 - Kodak publications **E-7022**, *KODAK GOLD 200 Film*, and **E-7023**, *KODAK ULTRA MAX 400
   Film*: the same plots as E-4046 except MTF, which they don't publish.
+- Kodak publication **F-4017**, *KODAK PROFESSIONAL TRI-X 320 and 400 Films* (12/2016): 400TX
+  characteristic curve (diffuse visual, D-76, 8 min large tank), spectral sensitivity, MTF,
+  diffuse rms granularity.
 - Kodak publication **E-4070**, *KODAK PROFESSIONAL ENDURA PREMIER Paper*: characteristic curves
   (Status A reflection), spectral sensitivity, spectral dye density.
 - **ISO 5-3:1995** (ANSI/NAPM IT2.18), Tables 3 and 4: Status A and Status M spectral products.
@@ -129,7 +137,7 @@ the orientation maths used by zoom.
 
 ## Ideas / roadmap
 
-- More films as data presets (Kodachrome 25, Portra 160, Tri-X, which needs a black-and-white model); the catalogue of
+- More films as data presets (Kodachrome 25, Portra 160, T-Max 100/400; Tri-X's other development times as push/pull); the catalogue of
   Kodak datasheets is a good starting point.
 - Highlight reconstruction for clipped raw channels.
 - Lens corrections (M9 vignetting/colour shading), crop and straighten.
