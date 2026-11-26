@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Highlights fitted to each film.** The camera's brightest recorded tone (about three stops over
+  mid-grey on the M9) now lands on the film's white, with a smooth shoulder from one stop over grey.
+  Ektachrome and Kodachrome whites reach white instead of stopping at a dull light grey, and the top
+  stop keeps more separation. Mid-tones are unchanged. Turn off **Fit camera highlights to film**
+  (or pass `--no-fit` to the CLI) for the Kodak datasheet curve exactly as published.
+
 ## 0.1.0-alpha.5
 
 - **Two new films: Ektachrome E100 and Portra 400.** Each is its own model built from its Kodak

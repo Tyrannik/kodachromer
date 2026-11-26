@@ -131,6 +131,12 @@ pub fn to_working(cam: &CameraImage, wb_adjust: [f32; 3], exposure_ev: f32) -> R
 }
 
 impl CameraImage {
+    /// Working-space value at which the sensor clipped, at the file's base
+    /// exposure (before the user's exposure adjustment).
+    pub fn clip_white(&self) -> f64 {
+        2f64.powf(self.baseline_ev as f64)
+    }
+
     /// Box-downscale by an integer factor so the long edge is <= `max_edge`.
     /// Returns the image and the factor used.
     pub fn downscale_to(&self, max_edge: usize) -> (CameraImage, usize) {

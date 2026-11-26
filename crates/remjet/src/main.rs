@@ -441,6 +441,7 @@ fn describe_change(a: &Edit, b: &Edit) -> String {
     check(a.warmth != b.warmth, "warmth");
     check(a.tint != b.tint, "tint");
     check(a.highlights != b.highlights, "highlights");
+    check(a.fit_highlights != b.fit_highlights, "highlight fit");
     check(a.halation != b.halation, "halation");
     check(a.sharpen != b.sharpen, "sharpen");
     check(a.grain != b.grain, "grain");
@@ -1125,6 +1126,10 @@ impl FilmApp {
         slider(ui, true, &mut e.warmth, -1.0..=1.0, 0.01, "Warmth", d.warmth);
         slider(ui, true, &mut e.tint, -1.0..=1.0, 0.01, "Tint", d.tint);
         slider(ui, film, &mut e.highlights, -1.0..=1.0, 0.01, "Highlights", d.highlights);
+        ui.add_enabled(film, egui::Checkbox::new(&mut e.fit_highlights, "Fit camera highlights to film")).on_hover_text(
+            "On: the camera's brightest recorded tone lands on the film's white, so highlights keep their detail. \
+             Off: the Kodak datasheet curve exactly as published.",
+        );
         slider(ui, film, &mut e.halation, 0.0..=1.0, 0.01, "Halation", d.halation);
         slider(ui, true, &mut e.sharpen, 0.0..=1.0, 0.01, "Sharpen", d.sharpen);
         slider(ui, film, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain);

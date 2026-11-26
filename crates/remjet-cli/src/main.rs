@@ -2,7 +2,7 @@
 //!
 //!   remjet-cli info   <files or folders...>
 //!   remjet-cli render <files or folders...> --out <folder> [--half] [--ev <stops>]
-//!                   [--preset kodachrome64 | ektachrome-e100 | portra400 | <preset.toml>] [--grain <amount>]
+//!                   [--preset kodachrome64 | ektachrome-e100 | portra400 | <preset.toml>] [--grain <amount>] [--no-fit]
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -13,7 +13,7 @@ use remjet_core::edit::ExportOptions;
 use remjet_core::film::{FilmModel, FilmParams, FilmPreset};
 use remjet_core::{output, raw};
 
-const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | portra400 | <preset.toml>]\n                  [--grain <amount>]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each file's saved app edit; default output is <folder>/exports)";
+const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | portra400 | <preset.toml>]\n                  [--grain <amount>] [--no-fit]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each file's saved app edit; default output is <folder>/exports)";
 
 /// Batch export using the app's sidecar edits.
 fn export(args: &[String]) -> Result<()> {
@@ -160,6 +160,7 @@ fn render(args: &[String]) -> Result<()> {
             "--half" => params.quality = Quality::Half,
             // With a preset, exposure is applied as film exposure (log domain).
             "--ev" => film_params.exposure_ev = it.next().context("--ev needs a value")?.parse()?,
+            "--no-fit" => film_params.sensor_white = None,
             "--grain" => film_params.grain = it.next().context("--grain needs a value")?.parse()?,
             "--preset" => {
                 let p = it.next().context("--preset needs a name or .toml path")?;
@@ -197,7 +198,8 @@ fn render(args: &[String]) -> Result<()> {
         let encoded = match &preset {
             Some(p) => {
                 let sensor = remjet_core::sensor::geometry(&raw_image);
-                let model = FilmModel::new(p, &FilmParams { sensor_pixel_um: sensor.pixel_pitch_um, ..film_params.clone() })?;
+                let sensor_white = film_params.sensor_white.map(|_| 2f64.powf(develop::baseline_exposure(&raw_image) as f64));
+                let model = FilmModel::new(p, &FilmParams { sensor_pixel_um: sensor.pixel_pitch_um, sensor_white, ..film_params.clone() })?;
                 let seed = seed_for(path);
                 output::display_to_srgb8(&model.apply(&linear, seed))
             }

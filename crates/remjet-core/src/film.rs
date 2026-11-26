@@ -267,6 +267,11 @@ pub struct FilmParams {
     /// and halation are physical sizes on the film and are converted to
     /// pixels with this. Defaults to the M9 the looks were tuned on.
     pub sensor_pixel_um: f64,
+    /// Scene-linear working value at which the camera clips, at the image's
+    /// base exposure (2^BaselineExposure; 1.0 for the M9). The film's
+    /// highlight shoulder is fitted so this lands on the film's white.
+    /// `None` renders the datasheet curve as it is, with no fit.
+    pub sensor_white: Option<f64>,
     /// Highlight shoulder, -1 (hold back / recover) .. +1 (open up).
     pub highlights: f64,
     /// Halation strength, 0 (off) .. 1 (strong).
@@ -284,6 +289,7 @@ impl Default for FilmParams {
             seed: 0,
             pixel_scale: 1.0,
             sensor_pixel_um: M9_PIXEL_UM,
+            sensor_white: Some(1.0),
             highlights: 0.0,
             halation: 0.0,
             output: OutputMode::Scan,
@@ -338,6 +344,44 @@ impl Default for Projection {
 
 /// Highlight knee: one stop above mid-grey, in log10 exposure.
 const HIGHLIGHT_KNEE: f32 = 0.30;
+/// How close to the clear base counts as the film's white when fitting the
+/// camera's range: 0.97 transmittance of the base (about 251/255 in sRGB),
+/// so the camera's last recorded stop still has tone in it.
+const FILM_WHITE_DENSITY: f64 = 0.0132;
+
+/// Smooth highlight fit: maps log exposure above the knee so the camera's
+/// clip point (`clip`, relative to the knee) lands on the film's white
+/// (`white`, relative to the knee). Slope 1 at the knee, so mid-tones are
+/// untouched and there is no visible kink; linear beyond the clip point.
+#[derive(Debug, Clone, Copy)]
+struct HighlightFit {
+    clip: f32,
+    k: f32,
+    end_slope: f32,
+}
+
+impl HighlightFit {
+    const IDENTITY: Self = Self { clip: 1.0, k: 0.0, end_slope: 1.0 };
+
+    fn new(clip: f64, white: f64) -> Self {
+        if !(clip > 0.05 && white > 0.05) {
+            return Self::IDENTITY;
+        }
+        // Keep the curve monotonic: x + k x^2 has slope 2*white/clip - 1 at the
+        // clip point, which must stay positive.
+        let white = white.max(0.6 * clip);
+        let k = (white - clip) / (clip * clip);
+        Self { clip: clip as f32, k: k as f32, end_slope: (2.0 * white / clip - 1.0) as f32 }
+    }
+
+    fn eval(&self, x: f32) -> f32 {
+        if x <= self.clip {
+            x + self.k * x * x
+        } else {
+            self.clip + self.k * self.clip * self.clip + (x - self.clip) * self.end_slope
+        }
+    }
+}
 
 use crate::sensor::M9_PIXEL_UM;
 /// Aperture used for the datasheet granularity measurement.
@@ -352,6 +396,8 @@ pub struct FilmModel {
     flare: f32,
     /// Slope of log exposure above the highlight knee (1 = unchanged).
     highlight_slope: f32,
+    /// Fits the camera's highlight range onto the film's (above the knee).
+    highlight_fit: HighlightFit,
     interimage: f32,
     engine: Engine,
     /// Per-layer spread from the datasheet MTF (sigma px, k, wide sigma px).
@@ -480,6 +526,26 @@ impl FilmModel {
             ((dmin[1] - dmin[ch] * scale) as f32, scale as f32)
         });
 
+        // Highlights: the camera records a fixed range above mid-grey (about
+        // three stops on the M9) and each film has its own. Fit one onto the
+        // other so the sensor's clip point lands on the film's white: slide
+        // films then reach white instead of stopping at a dull light grey, and
+        // a short print toe doesn't crush the camera's last stop.
+        let contrast = p.look.contrast.clamp(0.3, 3.0);
+        let film_white = find_log_e(|x| read(x)[1] - dmin[1], FILM_WHITE_DENSITY, grey_log_e, LOG_E_MAX);
+        let flare = p.look.flare.max(0.0) * 10f64.powf(grey_log_e - log_offset);
+        let knee = HIGHLIGHT_KNEE as f64;
+        let highlight_fit = match params.sensor_white {
+            Some(white) => {
+                let clip_exposure = color::mul_vec(&to_layers, &[white.max(1e-6); 3])[1].max(1e-9);
+                // Fitted at the image's base exposure, so the exposure control
+                // still moves the picture through the curve.
+                let clip_log_e = (clip_exposure + flare).log10() + log_offset - ev;
+                HighlightFit::new((clip_log_e - grey_log_e) * contrast - knee, film_white - grey_log_e - knee)
+            }
+            None => HighlightFit::IDENTITY,
+        };
+
         // Grain: per-pixel density std at full resolution, then reduced for
         // downscaled output by how much box-averaging f x f pixels shrinks
         // noise whose correlation area is ~4*pi*blur^2 (clumpier grain
@@ -514,6 +580,7 @@ impl FilmModel {
             // -1 compresses everything above the knee to ~40% (about 2.5x more
             // scene range before white); +1 expands it to blow out sooner.
             highlight_slope: 2f32.powf(params.highlights.clamp(-1.0, 1.0) as f32 * 1.3),
+            highlight_fit,
             interimage: p.look.interimage as f32,
             engine,
             spread,
@@ -555,8 +622,13 @@ impl FilmModel {
             // density (the curve is flat there, so nothing visible changes).
             let le = (e.max(0.0) + self.flare).log10() + self.log_offset;
             let rel = (le - self.grey_log_e).max(-3.0) * self.contrast;
-            // Highlight shoulder: compress (or expand) exposure above the knee.
-            let rel = if rel > HIGHLIGHT_KNEE { HIGHLIGHT_KNEE + (rel - HIGHLIGHT_KNEE) * self.highlight_slope } else { rel };
+            // Highlight shoulder: fit the camera's range onto the film's, then
+            // compress (or expand) it with the Highlights control.
+            let rel = if rel > HIGHLIGHT_KNEE {
+                HIGHLIGHT_KNEE + self.highlight_fit.eval(rel - HIGHLIGHT_KNEE) * self.highlight_slope
+            } else {
+                rel
+            };
             self.grey_log_e + rel
         });
         let mean = (log_e[0] + log_e[1] + log_e[2]) / 3.0;
@@ -1098,6 +1170,32 @@ mod tests {
         assert!(b[0] - a[0] > 0.01, "red should glow near the highlight: {a:?} -> {b:?}");
         assert!(b[0] - a[0] > (b[2] - a[2]) * 2.0, "glow should be red-dominant: {a:?} -> {b:?}");
         assert_eq!(off.pixels[far], on.pixels[far], "no glow far from highlights");
+    }
+
+    #[test]
+    fn camera_white_lands_on_film_white_when_fitted() {
+        // The camera's clip point (sensor_white) should reach (near) white on
+        // every built-in film, mid-grey must not move, and the ramp must stay
+        // monotonic through the fitted shoulder.
+        for &(id, _) in crate::presets::BUILTINS {
+            let p = FilmPreset::builtin(id).unwrap();
+            let fit = FilmModel::new(&p, &FilmParams { grain: 0.0, ..Default::default() }).unwrap();
+            let raw = FilmModel::new(&p, &FilmParams { grain: 0.0, sensor_white: None, ..Default::default() }).unwrap();
+            let g = p.exposure.grey_linear as f32;
+            let grey = |m: &FilmModel| m.scan(m.densities([g; 3]))[1];
+            assert!((grey(&fit) - grey(&raw)).abs() < 1e-4, "{id}: mid-grey moved");
+            let white = fit.scan(fit.densities([1.0; 3]))[1];
+            assert!(white > 0.95, "{id}: camera white only reaches {white}");
+            let mut last = -1.0;
+            // Up to a stop past the camera's clip. (Beyond that the digitised
+            // paper curve has sub-0.002 wiggles in its base density.)
+            for i in 0..=40 {
+                let v = g * 2f32.powf(i as f32 * 0.1);
+                let o = fit.scan(fit.densities([v; 3]))[1];
+                assert!(o >= last - 1e-5, "{id}: not monotonic at {v}");
+                last = o;
+            }
+        }
     }
 
     #[test]
