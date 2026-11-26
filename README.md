@@ -59,11 +59,13 @@ Optional **halation**, the red glow around bright lights that film without an an
 - **Scanned or projected:** view the slide as a film scanner reads it (open shadows) or as it looks
   projected on a screen (full density range, deep blacks, warm lamp, soft corner falloff).
 - **Batch work:** select several images, copy and paste settings, and export one, selected, edited or
-  all images to JPG, with progress and cancel.
+  all images to JPG, with progress and cancel. Export a whole shoot in one look (any film, keeping
+  each frame's own adjustments, or one frame's settings for all) without changing your edits.
 - **Good exports:** full-resolution or resized JPGs with 4:4:4 colour and camera metadata (date,
   shutter speed, ISO, focal length).
-- **Compare:** hold **B** for before/after, or open a real Kodachrome scan beside your photo with
-  **Reference…**.
+- **Compare:** hold **B** for before/after; split the photo with a draggable divider or show two
+  versions side by side (zoomed together), against the unfilmed frame or another film; or open a
+  real Kodachrome scan beside your photo with **Reference…**.
 
 ## Download
 
@@ -91,6 +93,7 @@ from source (below).
 |---|---|
 | Next / previous image | **→ / ←** |
 | Before / after | hold **B** (or *Hold for before*) |
+| Split / side by side compare | **C** cycles (or *Compare* under the photo) |
 | 100% at a point / back to fit | click the image; **Z** toggles; **Esc** fits |
 | Zoom in and out (up to 800%) | **Ctrl + mouse wheel** |
 | Pan | drag the zoomed image |
@@ -143,6 +146,8 @@ There are more details in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 ```powershell
 # Export a folder using each DNG's saved edits (resized to 2048 px, edited images only)
 remjet-cli export "D:\Photos\Japan" --max-edge 2048 --edited-only
+# Export the whole shoot as Portra 400, keeping each frame's own adjustments
+remjet-cli export "D:\Photos\Japan" --film portra400 --film-in-name
 # Show what the decoder sees in each file
 remjet-cli info "D:\Photos\Japan"
 ```

@@ -333,11 +333,14 @@ pub struct ExportOptions {
     pub max_edge: Option<u32>,
     /// Copy camera metadata (date, exposure, camera, lens) into the JPEG.
     pub keep_exif: bool,
+    /// Add the film to the file name (`L1002695_portra400.jpg`), so one
+    /// shoot can be exported in several looks into the same folder.
+    pub film_in_name: bool,
 }
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        Self { quality: 92, max_edge: None, keep_exif: true }
+        Self { quality: 92, max_edge: None, keep_exif: true, film_in_name: false }
     }
 }
 
@@ -354,9 +357,41 @@ pub fn export_jpeg(path: &Path, edit: &Edit, out_dir: &Path, opts: &ExportOption
         }
     }
     let exif = if opts.keep_exif { crate::exif::read(path).ok() } else { None };
-    let out = out_dir.join(path.with_extension("jpg").file_name().unwrap_or_default());
+    let out = out_dir.join(export_name(path, edit, opts));
     output::write_jpeg_with_exif(&img, &out, opts.quality.clamp(1, 100), exif.as_ref())?;
     Ok(out)
+}
+
+/// File name of a DNG's exported JPEG.
+pub fn export_name(path: &Path, edit: &Edit, opts: &ExportOptions) -> String {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    match (&edit.preset, opts.film_in_name) {
+        (Some(id), true) => format!("{stem}_{id}.jpg"),
+        (None, true) => format!("{stem}_neutral.jpg"),
+        _ => format!("{stem}.jpg"),
+    }
+}
+
+/// `edit` with its film swapped for `preset`, keeping every adjustment.
+/// The output and development are kept where the new film offers them, and
+/// fall back to a scan at normal development where it doesn't.
+pub fn with_film(edit: &Edit, preset: Option<&str>) -> Edit {
+    let mut e = Edit { preset: preset.map(str::to_owned), ..edit.clone() };
+    if let Some(p) = preset.and_then(|id| crate::presets::load(id).ok()) {
+        let negative = p.is_negative() || p.is_monochrome();
+        let ok = match e.output {
+            OutputMode::Scan => true,
+            OutputMode::Print => p.is_negative() && !p.is_monochrome() && p.print.is_some(),
+            OutputMode::Projection => !negative,
+        };
+        if !ok {
+            e.output = OutputMode::Scan;
+        }
+        if !p.supports_push(e.push) {
+            e.push = 0;
+        }
+    }
+    e
 }
 
 #[cfg(test)]
@@ -423,6 +458,30 @@ mod tests {
         assert_eq!(e.preset.as_deref(), Some("kodachrome64"));
         assert_eq!(e.exposure_ev, 1.0);
         assert_eq!(e.grain, 1.0);
+    }
+
+    #[test]
+    fn export_names_can_carry_the_film() {
+        let dng = Path::new("shoot/L1002695.DNG");
+        let portra = Edit { preset: Some("portra400".into()), ..Default::default() };
+        let plain = ExportOptions::default();
+        let tagged = ExportOptions { film_in_name: true, ..Default::default() };
+        assert_eq!(export_name(dng, &portra, &plain), "L1002695.jpg");
+        assert_eq!(export_name(dng, &portra, &tagged), "L1002695_portra400.jpg");
+        assert_eq!(export_name(dng, &Edit { preset: None, ..Default::default() }, &tagged), "L1002695_neutral.jpg");
+    }
+
+    #[test]
+    fn swapping_film_keeps_adjustments_and_drops_what_the_film_lacks() {
+        let slide = Edit { exposure_ev: 0.7, warmth: 0.2, output: OutputMode::Projection, push: 1, ..Default::default() };
+        let neg = with_film(&slide, Some("portra400"));
+        assert_eq!(neg.preset.as_deref(), Some("portra400"));
+        assert_eq!((neg.exposure_ev, neg.warmth), (0.7, 0.2));
+        assert_eq!(neg.output, OutputMode::Scan, "a negative can't be projected");
+        assert_eq!(neg.push, 1, "Portra 400 has push 1");
+        let k64 = with_film(&Edit { push: 1, ..neg }, Some("kodachrome64"));
+        assert_eq!(k64.push, 0, "Kodachrome has no push");
+        assert_eq!(with_film(&slide, None).preset, None);
     }
 
     #[test]

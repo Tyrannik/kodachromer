@@ -85,14 +85,26 @@ struct View {
 
 const MAX_ZOOM: f32 = 8.0;
 
+/// One of the renders a preview can show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Side {
+    /// The frame's edit (the "after").
+    After,
+    /// The same edit without film (neutral).
+    Before,
+    /// The edit with another film, for comparing looks.
+    Other,
+}
+
 /// What a preview job should produce.
 #[derive(Debug, Clone, PartialEq)]
 enum Mode {
-    /// Downscaled whole-image preview (plus neutral "before" and thumbnail).
+    /// Downscaled whole-image preview (plus neutral "before", the compared
+    /// look if any, and the thumbnail).
     Fit,
-    /// Full-resolution render for zooming. `region` (upright 0..1 x0,y0,x1,y1)
-    /// is rendered first as a quick patch; `before` asks for the neutral render.
-    Detail { region: [f32; 4], before: bool },
+    /// Full-resolution renders for zooming, in order. For `After`, `region`
+    /// (upright 0..1 x0,y0,x1,y1) is rendered first as a quick patch.
+    Detail { region: [f32; 4], sides: Vec<Side> },
 }
 
 /// Identifies a preview request; the detail region is excluded so panning
@@ -100,7 +112,17 @@ enum Mode {
 #[derive(Debug, Clone, PartialEq)]
 enum ModeKey {
     Fit,
-    Detail { before: bool },
+    Detail { sides: Vec<Side> },
+}
+
+/// How the preview compares the edit with something else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compare {
+    Off,
+    /// One image, a draggable divider: compared on the left, edit on the right.
+    Split,
+    /// Two images next to each other, zoomed and panned together.
+    SideBySide,
 }
 
 type RenderKey = (Edit, Option<FilmPreset>);
@@ -110,6 +132,8 @@ struct PreviewJob {
     edit: Edit,
     /// Unsaved tuned preset to preview instead of the stored one.
     preset: Option<FilmPreset>,
+    /// The edit with another film, when comparing looks.
+    other: Option<Edit>,
     mode: Mode,
 }
 
@@ -117,13 +141,15 @@ enum PreviewOut {
     Fit {
         after: egui::ColorImage,
         before: egui::ColorImage,
+        other: Option<egui::ColorImage>,
         thumb: egui::ColorImage,
         full_size: [usize; 2],
         /// Set when the file isn't from a Leica M9.
         camera_warning: Option<String>,
     },
     Patch { image: egui::ColorImage, region: [f32; 4] },
-    Full { image: egui::ColorImage, before: bool },
+    /// A full-resolution render; `edit` is what a Before / Other side shows.
+    Full { image: egui::ColorImage, side: Side, edit: Edit },
     /// Nothing new to send (result already delivered earlier).
     Done,
 }
@@ -140,6 +166,7 @@ struct Tune {
 struct PreviewResult {
     path: PathBuf,
     key: RenderKey,
+    other: Option<Edit>,
     out: Result<PreviewOut, String>,
 }
 
@@ -207,7 +234,7 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
         let mut full: Option<(PathBuf, CameraImage, Orientation)> = None;
         // Last full renders delivered, so repeat requests cost nothing.
         let mut full_after: Option<(PathBuf, RenderKey)> = None;
-        let mut full_before: Option<(PathBuf, Edit)> = None;
+        let mut full_side: HashMap<Side, (PathBuf, Edit)> = HashMap::new();
         let mut next: Option<PreviewJob> = None;
         loop {
             let mut job = match next.take() {
@@ -222,8 +249,11 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
             }
             let key: RenderKey = (job.edit.clone(), job.preset.clone());
             let seed = edit::seed_for(&job.path);
+            let neutral = Edit { preset: None, ..job.edit.clone() };
             let send = |out: anyhow::Result<PreviewOut>| {
-                let ok = res_tx.send(PreviewResult { path: job.path.clone(), key: key.clone(), out: out.map_err(|e| format!("{e:#}")) }).is_ok();
+                let ok = res_tx
+                    .send(PreviewResult { path: job.path.clone(), key: key.clone(), other: job.other.clone(), out: out.map_err(|e| format!("{e:#}")) })
+                    .is_ok();
                 ctx.request_repaint();
                 ok
             };
@@ -246,69 +276,84 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
                     }
                     let FitCache { cam, scale, orientation: o, full_size, camera_warning: warning, .. } = fit.as_ref().expect("filled above");
                     let after = output::apply_orientation(edit::render_with(cam, &job.edit, job.preset.as_ref(), *scale, seed)?, *o);
-                    let neutral = Edit { preset: None, ..job.edit.clone() };
                     let before = output::apply_orientation(edit::render(cam, &neutral, *scale, seed)?, *o);
+                    let other = match &job.other {
+                        Some(e) => Some(to_color(&output::apply_orientation(edit::render(cam, e, *scale, seed)?, *o))),
+                        None => None,
+                    };
                     let th = (THUMB_EDGE * after.height() as usize / after.width() as usize) as u32;
                     let thumb = image::imageops::thumbnail(&after, THUMB_EDGE as u32, th);
                     Ok(PreviewOut::Fit {
                         after: to_color(&after),
                         before: to_color(&before),
+                        other,
                         thumb: to_color(&thumb),
                         full_size: *full_size,
                         camera_warning: warning.clone(),
                     })
                 })()),
-                Mode::Detail { region, before } => {
+                Mode::Detail { region, sides } => {
                     let mut alive = true;
                     let result = (|| -> anyhow::Result<()> {
                         if full.as_ref().is_none_or(|c| c.0 != job.path) {
                             full = None; // free the previous image first
+                            full_side.clear();
                             let raw_image = raw::load(&job.path)?;
                             let cam = develop::demosaic(&raw_image, None, Quality::Full)?;
                             full = Some((job.path.clone(), cam, raw_image.orientation));
                         }
                         let (_, cam, o) = full.as_ref().expect("filled above");
-                        if *before {
-                            let neutral = Edit { preset: None, ..job.edit.clone() };
-                            if full_before.as_ref().is_some_and(|(p, e)| *p == job.path && *e == neutral) {
-                                alive = send(Ok(PreviewOut::Done));
-                                return Ok(());
+                        for (n, side) in sides.iter().enumerate() {
+                            // A newer request (e.g. the slider moved on) wins over the rest.
+                            if n > 0 {
+                                if let Ok(newer) = job_rx.try_recv() {
+                                    next = Some(newer);
+                                    return Ok(());
+                                }
                             }
-                            let img = output::apply_orientation(edit::render(cam, &neutral, 1.0, seed)?, *o);
-                            alive = send(Ok(PreviewOut::Full { image: to_color(&img), before: true }));
-                            full_before = Some((job.path.clone(), neutral));
-                            return Ok(());
-                        }
-                        if full_after.as_ref().is_some_and(|(p, k)| *p == job.path && *k == key) {
-                            alive = send(Ok(PreviewOut::Done));
-                            return Ok(());
-                        }
-                        // Quick patch of what's on screen (skipped when most of
-                        // the frame is visible anyway).
-                        let s = map_rect(*region, |u, v| display_to_sensor(*o, u, v));
-                        let (x0, y0) = ((s[0] * cam.width as f32) as usize, (s[1] * cam.height as f32) as usize);
-                        let (x1, y1) = ((s[2] * cam.width as f32).ceil() as usize, (s[3] * cam.height as f32).ceil() as usize);
-                        let (x1, y1) = (x1.min(cam.width), y1.min(cam.height));
-                        if x1 > x0 && y1 > y0 && (x1 - x0) * (y1 - y0) < cam.width * cam.height * 2 / 5 {
-                            let patch = edit::render_region(cam, (x0, y0, x1 - x0, y1 - y0), &job.edit, job.preset.as_ref(), seed)?;
-                            let patch = output::apply_orientation(patch, *o);
-                            let rendered = [
-                                x0 as f32 / cam.width as f32,
-                                y0 as f32 / cam.height as f32,
-                                x1 as f32 / cam.width as f32,
-                                y1 as f32 / cam.height as f32,
-                            ];
-                            let region = map_rect(rendered, |s, t| sensor_to_display(*o, s, t));
-                            alive = send(Ok(PreviewOut::Patch { image: to_color(&patch), region }));
-                            // A newer request (e.g. the slider moved on) wins over the full render.
-                            if let Ok(newer) = job_rx.try_recv() {
-                                next = Some(newer);
-                                return Ok(());
+                            if *side != Side::After {
+                                let e = match side {
+                                    Side::Other => job.other.clone().unwrap_or_else(|| neutral.clone()),
+                                    _ => neutral.clone(),
+                                };
+                                if full_side.get(side).is_some_and(|(p, done)| *p == job.path && *done == e) {
+                                    continue;
+                                }
+                                let img = output::apply_orientation(edit::render(cam, &e, 1.0, seed)?, *o);
+                                alive = send(Ok(PreviewOut::Full { image: to_color(&img), side: *side, edit: e.clone() }));
+                                full_side.insert(*side, (job.path.clone(), e));
+                                continue;
                             }
+                            if full_after.as_ref().is_some_and(|(p, k)| *p == job.path && *k == key) {
+                                continue;
+                            }
+                            // Quick patch of what's on screen (skipped when most of
+                            // the frame is visible anyway).
+                            let s = map_rect(*region, |u, v| display_to_sensor(*o, u, v));
+                            let (x0, y0) = ((s[0] * cam.width as f32) as usize, (s[1] * cam.height as f32) as usize);
+                            let (x1, y1) = ((s[2] * cam.width as f32).ceil() as usize, (s[3] * cam.height as f32).ceil() as usize);
+                            let (x1, y1) = (x1.min(cam.width), y1.min(cam.height));
+                            if x1 > x0 && y1 > y0 && (x1 - x0) * (y1 - y0) < cam.width * cam.height * 2 / 5 {
+                                let patch = edit::render_region(cam, (x0, y0, x1 - x0, y1 - y0), &job.edit, job.preset.as_ref(), seed)?;
+                                let patch = output::apply_orientation(patch, *o);
+                                let rendered = [
+                                    x0 as f32 / cam.width as f32,
+                                    y0 as f32 / cam.height as f32,
+                                    x1 as f32 / cam.width as f32,
+                                    y1 as f32 / cam.height as f32,
+                                ];
+                                let region = map_rect(rendered, |s, t| sensor_to_display(*o, s, t));
+                                alive = send(Ok(PreviewOut::Patch { image: to_color(&patch), region }));
+                                if let Ok(newer) = job_rx.try_recv() {
+                                    next = Some(newer);
+                                    return Ok(());
+                                }
+                            }
+                            let img = output::apply_orientation(edit::render_with(cam, &job.edit, job.preset.as_ref(), 1.0, seed)?, *o);
+                            alive = send(Ok(PreviewOut::Full { image: to_color(&img), side: Side::After, edit: job.edit.clone() }));
+                            full_after = Some((job.path.clone(), key.clone()));
                         }
-                        let img = output::apply_orientation(edit::render_with(cam, &job.edit, job.preset.as_ref(), 1.0, seed)?, *o);
-                        alive = send(Ok(PreviewOut::Full { image: to_color(&img), before: false }));
-                        full_after = Some((job.path.clone(), key.clone()));
+                        alive = send(Ok(PreviewOut::Done));
                         Ok(())
                     })();
                     if let Err(e) = result {
@@ -365,9 +410,41 @@ struct Batch {
     finished: Arc<AtomicBool>,
     failures: Arc<Mutex<Vec<String>>>,
     out_dir_label: String,
+    /// " as Portra 400" etc. when not each frame's own edit.
+    look_label: String,
 }
 
-fn spawn_batch(ctx: egui::Context, files: Vec<PathBuf>, out_dir: Option<PathBuf>, opts: ExportOptions) -> Batch {
+/// Which settings a batch export renders each frame with.
+#[derive(Debug, Clone, PartialEq)]
+enum ExportLook {
+    /// Each frame's own saved edit.
+    Own,
+    /// The edited frame's settings, for every frame.
+    ThisFrame,
+    /// Each frame's own adjustments, with this film.
+    Film(String),
+}
+
+/// The settings a batch export uses: each frame's own, one edit for all,
+/// or each frame's own with the film swapped. Saved edits are not changed.
+#[derive(Debug, Clone)]
+enum BatchLook {
+    Own,
+    All(Edit),
+    Film(String),
+}
+
+impl BatchLook {
+    fn edit_for(&self, path: &Path) -> Edit {
+        match self {
+            BatchLook::Own => edit::load(path).unwrap_or_default(),
+            BatchLook::All(e) => e.clone(),
+            BatchLook::Film(id) => edit::with_film(&edit::load(path).unwrap_or_default(), Some(id)),
+        }
+    }
+}
+
+fn spawn_batch(ctx: egui::Context, files: Vec<PathBuf>, out_dir: Option<PathBuf>, opts: ExportOptions, look: BatchLook) -> Batch {
     let done = Arc::new(AtomicUsize::new(0));
     let cancel = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
@@ -377,14 +454,27 @@ fn spawn_batch(ctx: egui::Context, files: Vec<PathBuf>, out_dir: Option<PathBuf>
         (None, Some(f)) => f.parent().unwrap_or(Path::new(".")).join("exports").display().to_string(),
         _ => String::new(),
     };
-    let batch = Batch { total: files.len(), done: done.clone(), cancel: cancel.clone(), finished: finished.clone(), failures: failures.clone(), out_dir_label };
+    let look_label = match &look {
+        BatchLook::Own => String::new(),
+        BatchLook::All(_) => " with one frame's settings".into(),
+        BatchLook::Film(id) => format!(" as {}", presets::load(id).map_or(id.clone(), |p| p.name)),
+    };
+    let batch = Batch {
+        total: files.len(),
+        done: done.clone(),
+        cancel: cancel.clone(),
+        finished: finished.clone(),
+        failures: failures.clone(),
+        out_dir_label,
+        look_label,
+    };
     thread::spawn(move || {
         for path in files {
             if cancel.load(Ordering::SeqCst) {
                 break;
             }
             let dir = out_dir.clone().unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("exports"));
-            let e = edit::load(&path).unwrap_or_default();
+            let e = look.edit_for(&path);
             if let Err(err) = edit::export_jpeg(&path, &e, &dir, &opts) {
                 failures.lock().expect("not poisoned").push(format!("{}: {err:#}", file_name(&path)));
             }
@@ -410,6 +500,7 @@ struct Keys {
     left: bool,
     right: bool,
     before: bool,
+    compare: bool,
     esc: bool,
     zoom: bool,
     all: bool,
@@ -470,7 +561,8 @@ struct FilmApp {
 
     edit: Edit,
     saved_edit: Edit,
-    last_requested: Option<(PathBuf, RenderKey, ModeKey)>,
+    /// Last preview request: (file, render key, mode, compared look).
+    last_requested: Option<(PathBuf, RenderKey, ModeKey, Option<Edit>)>,
 
     /// (id, name) of available film presets.
     preset_list: Vec<(String, String)>,
@@ -483,11 +575,15 @@ struct FilmApp {
     preview_rx: Receiver<PreviewResult>,
     fit_after: Option<egui::TextureHandle>,
     fit_before: Option<egui::TextureHandle>,
+    /// Fit render of the compared look, and the edit it shows.
+    fit_other: Option<(egui::TextureHandle, Edit)>,
     fit_path: Option<PathBuf>,
     zoom: Option<View>,
     /// Full-resolution render (and the edit it shows), for zooming/panning on the GPU.
     full_tex: Option<(egui::TextureHandle, RenderKey)>,
-    full_before_tex: Option<egui::TextureHandle>,
+    /// Full-resolution renders of the neutral and the compared look, with the edits they show.
+    full_before_tex: Option<(egui::TextureHandle, Edit)>,
+    full_other_tex: Option<(egui::TextureHandle, Edit)>,
     /// Quick render of the visible area for the newest edit: (texture, upright rect, key).
     patch: Option<(egui::TextureHandle, [f32; 4], RenderKey)>,
     /// Upright full-resolution size of the current image.
@@ -496,6 +592,13 @@ struct FilmApp {
     visible: [f32; 4],
     rendering: bool,
     show_before: bool,
+    compare: Compare,
+    /// Film to compare with; None compares with the neutral "before".
+    compare_with: Option<String>,
+    /// Split divider position across the preview, 0..1.
+    split: f32,
+    /// Settings the export buttons use (not saved between sessions).
+    export_look: ExportLook,
 
     thumbs: HashMap<PathBuf, egui::TextureHandle>,
     thumb_gen: Arc<AtomicU64>,
@@ -544,15 +647,21 @@ impl FilmApp {
             preview_rx,
             fit_after: None,
             fit_before: None,
+            fit_other: None,
             fit_path: None,
             zoom: None,
             full_tex: None,
             full_before_tex: None,
+            full_other_tex: None,
             patch: None,
             full_size: None,
             visible: [0.0, 0.0, 1.0, 1.0],
             rendering: false,
             show_before: false,
+            compare: Compare::Off,
+            compare_with: None,
+            split: 0.5,
+            export_look: ExportLook::Own,
             thumbs: HashMap::new(),
             thumb_gen: Arc::new(AtomicU64::new(0)),
             thumb_tx,
@@ -602,6 +711,7 @@ impl FilmApp {
         self.selection.clear();
         self.fit_after = None;
         self.fit_before = None;
+        self.fit_other = None;
         if !self.files.is_empty() {
             self.focus(0);
         }
@@ -621,6 +731,7 @@ impl FilmApp {
         self.zoom = None;
         self.full_tex = None;
         self.full_before_tex = None;
+        self.full_other_tex = None;
         self.patch = None;
         self.full_size = None;
         self.edit = edit::load(&self.files[index]).unwrap_or_default();
@@ -766,7 +877,42 @@ impl FilmApp {
         }
         self.save_if_changed();
         self.settings.save();
-        self.batch = Some(spawn_batch(ctx.clone(), files, self.settings.export_dir.clone(), self.settings.export.clone()));
+        let look = match &self.export_look {
+            ExportLook::Own => BatchLook::Own,
+            ExportLook::ThisFrame => BatchLook::All(self.edit.clone()),
+            ExportLook::Film(id) => BatchLook::Film(id.clone()),
+        };
+        self.batch = Some(spawn_batch(ctx.clone(), files, self.settings.export_dir.clone(), self.settings.export.clone(), look));
+    }
+
+    fn film_name(&self, preset: Option<&str>) -> String {
+        match preset {
+            None => "No film".into(),
+            Some(id) => self.preset_list.iter().find(|(i, _)| i == id).map_or(id.to_string(), |p| p.1.clone()),
+        }
+    }
+
+    /// The edit the comparison shows beside the current one: the same edit
+    /// with the compared film, or without film.
+    fn other_edit(&self) -> Edit {
+        edit::with_film(&self.edit, self.compare_with.as_deref())
+    }
+
+    /// Label of the compared side.
+    fn other_label(&self) -> String {
+        match &self.compare_with {
+            None => "Before".into(),
+            Some(id) => self.film_name(Some(id)),
+        }
+    }
+
+    /// Make the compared film the frame's film, and compare with the old one.
+    fn swap_looks(&mut self) {
+        let Some(id) = self.compare_with.clone() else { return };
+        let old = self.edit.preset.clone();
+        self.edit = edit::with_film(&self.edit, Some(&id));
+        self.compare_with = old;
+        self.show_toast(format!("Now {}, comparing with {}", self.film_name(Some(&id)), self.other_label()));
     }
 
     fn request_preview(&mut self) {
@@ -778,11 +924,15 @@ impl FilmApp {
             .filter(|t| Some(&t.id) == self.edit.preset.as_ref() && t.working != t.saved)
             .map(|t| t.working.clone());
         let render_key: RenderKey = (self.edit.clone(), preset.clone());
+        // The compared look is rendered only while comparing with a film.
+        let other = (self.compare != Compare::Off && self.compare_with.is_some()).then(|| self.other_edit());
         let mode_key = match self.zoom {
             None => ModeKey::Fit,
-            Some(_) => ModeKey::Detail { before: self.show_before },
+            Some(_) if self.show_before => ModeKey::Detail { sides: vec![Side::Before] },
+            Some(_) if self.compare == Compare::Off => ModeKey::Detail { sides: vec![Side::After] },
+            Some(_) => ModeKey::Detail { sides: vec![Side::After, if other.is_some() { Side::Other } else { Side::Before }] },
         };
-        let key = (path.clone(), render_key, mode_key.clone());
+        let key = (path.clone(), render_key, mode_key.clone(), other.clone());
         if self.last_requested.as_ref() == Some(&key) {
             return;
         }
@@ -790,9 +940,9 @@ impl FilmApp {
         self.rendering = true;
         let mode = match mode_key {
             ModeKey::Fit => Mode::Fit,
-            ModeKey::Detail { before } => Mode::Detail { region: self.visible, before },
+            ModeKey::Detail { sides } => Mode::Detail { region: self.visible, sides },
         };
-        let _ = self.preview_tx.send(PreviewJob { path, edit: self.edit.clone(), preset, mode });
+        let _ = self.preview_tx.send(PreviewJob { path, edit: self.edit.clone(), preset, other, mode });
     }
 
     /// The render key the screen should currently show.
@@ -805,7 +955,7 @@ impl FilmApp {
             if self.current_path() != Some(&res.path) {
                 continue;
             }
-            let latest = self.current_key() == Some(&res.key);
+            let latest = self.last_requested.as_ref().is_some_and(|k| k.1 == res.key && k.3 == res.other);
             let lin = egui::TextureOptions::LINEAR;
             // Full-res: crisp pixels when magnified, mipmapped when zoomed out.
             let full_opts = egui::TextureOptions {
@@ -815,11 +965,14 @@ impl FilmApp {
                 ..lin
             };
             match res.out {
-                Ok(PreviewOut::Fit { after, before, thumb, full_size, camera_warning }) => {
+                Ok(PreviewOut::Fit { after, before, other, thumb, full_size, camera_warning }) => {
                     self.set_camera_warning(&res.path, camera_warning);
                     self.thumbs.insert(res.path.clone(), ctx.load_texture(thumb_name(&res.path), thumb, lin));
                     self.fit_after = Some(ctx.load_texture("after", after, lin));
                     self.fit_before = Some(ctx.load_texture("before", before, lin));
+                    if let (Some(img), Some(e)) = (other, res.other.clone()) {
+                        self.fit_other = Some((ctx.load_texture("other", img, lin), e));
+                    }
                     self.fit_path = Some(res.path.clone());
                     self.full_size = Some(full_size);
                     if latest {
@@ -829,18 +982,17 @@ impl FilmApp {
                 Ok(PreviewOut::Patch { image, region }) if latest => {
                     self.patch = Some((ctx.load_texture("patch", image, full_opts), region, res.key));
                 }
-                Ok(PreviewOut::Full { image, before: false }) => {
+                Ok(PreviewOut::Full { image, side: Side::After, .. }) => {
                     self.full_tex = Some((ctx.load_texture("full", image, full_opts), res.key.clone()));
                     if self.patch.as_ref().is_some_and(|p| p.2 == res.key) {
                         self.patch = None;
                     }
-                    if latest {
-                        self.rendering = false;
-                    }
                 }
-                Ok(PreviewOut::Full { image, before: true }) => {
-                    self.full_before_tex = Some(ctx.load_texture("full-before", image, full_opts));
-                    self.rendering = false;
+                Ok(PreviewOut::Full { image, side: Side::Before, edit }) => {
+                    self.full_before_tex = Some((ctx.load_texture("full-before", image, full_opts), edit));
+                }
+                Ok(PreviewOut::Full { image, side: Side::Other, edit }) => {
+                    self.full_other_tex = Some((ctx.load_texture("full-other", image, full_opts), edit));
                 }
                 Ok(PreviewOut::Done) => {
                     if latest {
@@ -874,7 +1026,7 @@ impl FilmApp {
                 let cancelled = b.cancel.load(Ordering::SeqCst);
                 self.status = match (cancelled, failures.len()) {
                     (true, _) => format!("Export cancelled after {done} of {}.", b.total),
-                    (false, 0) => format!("Exported {done} JPG(s) to {}", b.out_dir_label),
+                    (false, 0) => format!("Exported {done} JPG(s){} to {}", b.look_label, b.out_dir_label),
                     (false, n) => format!("Exported {} of {}; {n} failed: {}", done - n, b.total, failures.join("; ")),
                 };
                 self.batch = None;
@@ -918,6 +1070,7 @@ impl FilmApp {
                 left: pressed(egui::Key::ArrowLeft),
                 right: pressed(egui::Key::ArrowRight),
                 before: i.key_down(egui::Key::B),
+                compare: !cmd && pressed(egui::Key::C),
                 esc: pressed(egui::Key::Escape),
                 zoom: !cmd && pressed(egui::Key::Z),
                 all: cmd && pressed(egui::Key::A),
@@ -928,7 +1081,14 @@ impl FilmApp {
                 redo: cmd && (pressed(egui::Key::Y) || (i.modifiers.shift && pressed(egui::Key::Z))),
             }
         });
-        let Keys { left, right, before, esc, zoom: z, all, copy, paste, paste_text, undo, redo } = keys;
+        let Keys { left, right, before, compare, esc, zoom: z, all, copy, paste, paste_text, undo, redo } = keys;
+        if compare {
+            self.compare = match self.compare {
+                Compare::Off => Compare::Split,
+                Compare::Split => Compare::SideBySide,
+                Compare::SideBySide => Compare::Off,
+            };
+        }
         if undo {
             self.step_history(false);
         }
@@ -1229,6 +1389,37 @@ impl FilmApp {
                 if before.is_pointer_button_down_on() {
                     self.show_before = true;
                 }
+                ui.separator();
+                ui.label(egui::RichText::new("Compare").color(theme::TEXT_WEAK));
+                for (mode, label, tip) in [
+                    (Compare::Off, "Off", "C cycles the compare views"),
+                    (Compare::Split, "Split", "One image with a divider to drag: compared look on the left, your edit on the right. C cycles."),
+                    (Compare::SideBySide, "Side by side", "Two images next to each other, zoomed and panned together. C cycles."),
+                ] {
+                    if ui.add(egui::Button::new(label).selected(self.compare == mode)).on_hover_text(tip).clicked() {
+                        self.compare = mode;
+                    }
+                }
+                ui.add_enabled_ui(self.compare != Compare::Off, |ui| {
+                    ui.label(egui::RichText::new("with").color(theme::TEXT_WEAK));
+                    let current = self.compare_with.as_deref().map_or("Before (no film)".to_string(), |id| self.film_name(Some(id)));
+                    let mut with = self.compare_with.clone();
+                    egui::ComboBox::from_id_salt("compare-with").width(130.0).selected_text(current).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut with, None, "Before (no film)");
+                        for (id, name) in &self.preset_list {
+                            if self.edit.preset.as_ref() != Some(id) {
+                                ui.selectable_value(&mut with, Some(id.clone()), name);
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Compare your edit with the frame before the film look, or with another film using the same adjustments");
+                    self.compare_with = with;
+                    if self.compare_with.is_some() && ui.button("Use film").on_hover_text("Switch this frame to the compared film (and compare with the one it had)").clicked() {
+                        self.swap_looks();
+                    }
+                });
+                ui.separator();
                 let fit = self.zoom.is_none();
                 if ui.add(egui::Button::new("Fit").selected(fit)).on_hover_text("Esc").clicked() && !fit {
                     self.zoom = None;
@@ -1237,11 +1428,11 @@ impl FilmApp {
                     self.zoom = Some(View { level: 1.0, center: self.zoom.map_or([0.5, 0.5], |z| z.center) });
                 }
             });
-            if let Some(z) = self.zoom {
-                ui.label(egui::RichText::new(format!("{:.0}%", z.level * 100.0)).color(theme::TEXT_WEAK));
-            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new("Click the photo for 100%. Ctrl+scroll zooms, drag pans, ←/→ change frame.").small().color(theme::TEXT_WEAK));
+                theme::info(ui, "Click the photo for 100%. Ctrl+scroll zooms, drag pans, ←/→ change frame. Hold B for before, C cycles the compare views.");
+                if let Some(z) = self.zoom.filter(|z| (z.level - 1.0).abs() >= 0.01) {
+                    ui.label(egui::RichText::new(format!("{:.0}%", z.level * 100.0)).color(theme::TEXT_WEAK));
+                }
             });
         });
     }
@@ -1410,6 +1601,27 @@ impl FilmApp {
     fn export_section(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         theme::section(ui, "Export JPG");
+        // Which settings the frames are exported with. Saved edits are never changed.
+        let this_frame = self.current_path().map(|p| file_name(p)).unwrap_or_default();
+        let look_label = |look: &ExportLook| match look {
+            ExportLook::Own => "Each frame's own edit".to_string(),
+            ExportLook::ThisFrame => format!("Settings of {this_frame}"),
+            ExportLook::Film(id) => format!("{}, own adjustments", self.film_name(Some(id))),
+        };
+        let mut look = self.export_look.clone();
+        row_info(ui, "Look", Some(EXPORT_LOOK_INFO), |ui| {
+            egui::ComboBox::from_id_salt("export-look").width(ui.available_width()).selected_text(look_label(&look)).show_ui(ui, |ui| {
+                ui.selectable_value(&mut look, ExportLook::Own, look_label(&ExportLook::Own));
+                ui.selectable_value(&mut look, ExportLook::ThisFrame, look_label(&ExportLook::ThisFrame))
+                    .on_hover_text("Every exported frame gets this frame's film and adjustments");
+                ui.separator();
+                ui.label(egui::RichText::new("Own adjustments, with the film:").small().color(theme::TEXT_WEAK));
+                for (id, name) in &self.preset_list {
+                    ui.selectable_value(&mut look, ExportLook::Film(id.clone()), name);
+                }
+            });
+        });
+        self.export_look = look;
         let opts = &mut self.settings.export;
         let size_label = SIZES.iter().find(|(s, _)| *s == opts.max_edge).map_or("Custom", |s| s.1);
         row(ui, "Size", |ui| {
@@ -1426,6 +1638,11 @@ impl FilmApp {
             ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
             ui.checkbox(&mut opts.keep_exif, "Keep camera metadata (EXIF)");
             theme::info(ui, "Copies the date, camera, lens and exposure settings from the DNG into the JPG. Off writes no metadata.");
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.checkbox(&mut opts.film_in_name, "Film in file name");
+            theme::info(ui, "Names files like L1002695_portra400.jpg, so the same frames can be exported in several looks into one folder without replacing each other.");
         });
 
         let dest = match (&self.settings.export_dir, &self.folder) {
@@ -1488,7 +1705,7 @@ impl FilmApp {
     }
 
     fn preview(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.max_rect();
+        let area = ui.max_rect();
         let ppp = ui.ctx().pixels_per_point();
         if self.selected.is_none() {
             ui.centered_and_justified(|ui| {
@@ -1503,14 +1720,46 @@ impl FilmApp {
             return;
         };
         let (fw, fh) = (fw as f32, fh as f32);
+
+        // Side by side: two panes showing the same view; pointer positions in
+        // the right pane are mapped onto the left one, which drives the view.
+        let side_by_side = self.compare == Compare::SideBySide && !self.show_before;
+        const GAP: f32 = 12.0;
+        let (rect, right_pane) = if side_by_side {
+            let w = (area.width() - GAP) / 2.0;
+            let left = egui::Rect::from_min_size(area.min, egui::vec2(w, area.height()));
+            (left, Some(left.translate(egui::vec2(w + GAP, 0.0))))
+        } else {
+            (area, None)
+        };
+        let to_left = |p: egui::Pos2| match right_pane {
+            Some(r) if p.x >= r.min.x - GAP / 2.0 => p - (r.min - rect.min),
+            _ => p,
+        };
         let fit_level = (rect.width() * ppp / fw).min(rect.height() * ppp / fh);
 
-        let resp = ui.interact(rect, ui.scope_id().with("preview"), egui::Sense::click_and_drag());
-        let pointer = resp.hover_pos();
+        let resp = ui.interact(area, ui.scope_id().with("preview"), egui::Sense::click_and_drag());
+        // Split view: the divider is a handle of its own, on top of the photo.
+        let split = self.compare == Compare::Split && !self.show_before;
+        let divider_x = area.left() + self.split * area.width();
+        let divider = split.then(|| {
+            let r = egui::Rect::from_x_y_ranges(divider_x - 8.0..=divider_x + 8.0, area.y_range());
+            ui.interact(r, ui.scope_id().with("divider"), egui::Sense::drag())
+        });
+        if let Some(d) = &divider {
+            if d.hovered() || d.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            if let Some(p) = d.interact_pointer_pos().filter(|_| d.dragged()) {
+                self.split = ((p.x - area.left()) / area.width()).clamp(0.02, 0.98);
+            }
+        }
+        let on_divider = divider.as_ref().is_some_and(|d| d.hovered() || d.dragged());
+        let pointer = resp.hover_pos().map(to_left);
         // Our own click test (press + release in the preview with little
         // movement): egui's drag-sensing click detection misses fast clicks.
-        let click_pos = ui.input(|i| i.pointer.interact_pos());
-        let clicked = ui.input(|i| i.pointer.primary_clicked()) && click_pos.is_some_and(|p| rect.contains(p)) && resp.hovered();
+        let click_pos = ui.input(|i| i.pointer.interact_pos()).map(to_left);
+        let clicked = !on_divider && ui.input(|i| i.pointer.primary_clicked()) && resp.hovered() && click_pos.is_some();
         let zoom_delta = if resp.hovered() { ui.input(|i| i.zoom_delta()) } else { 1.0 };
 
         // Current view (fit is just the lowest zoom level, centred).
@@ -1530,7 +1779,7 @@ impl FilmApp {
         }
 
         if self.zoom.is_some() {
-            if resp.dragged() {
+            if resp.dragged() && !on_divider {
                 let s = size(view.level);
                 view.center[0] -= resp.drag_delta().x / s.x;
                 view.center[1] -= resp.drag_delta().y / s.y;
@@ -1559,62 +1808,105 @@ impl FilmApp {
             self.zoom = Some(view);
         }
         let img_rect = egui::Rect::from_min_size(rect.center() - egui::vec2(view.center[0] * s.x, view.center[1] * s.y), s);
-        let at = |r: [f32; 4]| egui::Rect::from_min_max(img_rect.lerp_inside(egui::vec2(r[0], r[1])), img_rect.lerp_inside(egui::vec2(r[2], r[3])));
         self.visible = {
             let a = (rect.min - img_rect.min) / s;
             let b = (rect.max - img_rect.min) / s;
             [a.x.clamp(0.0, 1.0), a.y.clamp(0.0, 1.0), b.x.clamp(0.0, 1.0), b.y.clamp(0.0, 1.0)]
         };
 
-        let painter = ui.painter_at(rect);
-        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        let white = egui::Color32::WHITE;
         let zoomed = self.zoom.is_some();
+        let compared = if self.compare_with.is_some() { Side::Other } else { Side::Before };
         if self.show_before {
-            let tex = if zoomed { self.full_before_tex.as_ref().or(self.fit_before.as_ref()) } else { self.fit_before.as_ref() };
-            if let Some(t) = tex {
-                painter.image(t.id(), img_rect, uv, white);
+            self.paint_side(&ui.painter_at(area), img_rect, Side::Before, zoomed);
+            badge(ui, img_rect.intersect(area), "Before", false);
+        } else if let Some(right) = right_pane {
+            self.paint_side(&ui.painter_at(rect), img_rect, compared, zoomed);
+            self.paint_side(&ui.painter_at(right), img_rect.translate(right.min - rect.min), Side::After, zoomed);
+            badge(ui, img_rect.intersect(rect), &self.other_label(), false);
+            badge(ui, img_rect.translate(right.min - rect.min).intersect(right), &self.film_name(self.edit.preset.as_deref()), false);
+        } else if split {
+            let (l, r) = area.split_left_right_at_x(divider_x);
+            self.paint_side(&ui.painter_at(l), img_rect, compared, zoomed);
+            self.paint_side(&ui.painter_at(r), img_rect, Side::After, zoomed);
+            let p = ui.painter_at(area);
+            let shown = img_rect.intersect(area);
+            let stroke = egui::Stroke::new(if on_divider { 2.0 } else { 1.5 }, egui::Color32::WHITE);
+            p.line_segment([egui::pos2(divider_x, shown.top()), egui::pos2(divider_x, shown.bottom())], stroke);
+            let knob = egui::pos2(divider_x, shown.center().y);
+            p.circle(knob, 13.0, egui::Color32::from_black_alpha(190), egui::Stroke::new(1.5, egui::Color32::WHITE));
+            for dir in [-1.0f32, 1.0] {
+                let tip = knob + egui::vec2(dir * 8.0, 0.0);
+                let back = knob + egui::vec2(dir * 3.0, 0.0);
+                p.add(egui::Shape::convex_polygon(
+                    vec![tip, back + egui::vec2(0.0, -4.5), back + egui::vec2(0.0, 4.5)],
+                    egui::Color32::WHITE,
+                    egui::Stroke::NONE,
+                ));
             }
+            badge(ui, shown, &self.other_label(), false);
+            badge(ui, shown, &self.film_name(self.edit.preset.as_deref()), true);
         } else {
-            // Best available: full-res render (possibly of an older edit), else
-            // the fit preview stretched; then the fresh patch on top.
-            let current = self.current_key().cloned();
-            let full_current = self.full_tex.as_ref().is_some_and(|f| Some(&f.1) == current.as_ref());
-            match (&self.full_tex, zoomed) {
-                (Some((t, _)), true) => {
-                    painter.image(t.id(), img_rect, uv, white);
-                }
-                _ => {
-                    if let Some(t) = &self.fit_after {
-                        painter.image(t.id(), img_rect, uv, white);
-                    }
-                }
-            }
-            if zoomed && !full_current {
-                if let Some((t, r, k)) = &self.patch {
-                    if Some(k) == current.as_ref() {
-                        painter.image(t.id(), at(*r), uv, white);
-                    }
-                }
-            }
+            self.paint_side(&ui.painter_at(area), img_rect, Side::After, zoomed);
         }
-        if zoomed {
-            if self.show_before {
-                badge(ui, rect, "Before");
-            }
-        } else {
-            if self.show_before {
-                badge(ui, rect, "Before");
-            }
-            if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn);
-            }
+        if !zoomed && resp.hovered() && !on_divider {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn);
         }
-        if zoomed && resp.hovered() {
+        if zoomed && resp.hovered() && !on_divider {
             ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
         }
         if let Some(w) = self.current_path().and_then(|p| self.camera_warnings.get(p)) {
-            camera_banner(ui, rect, w);
+            camera_banner(ui, area, w);
+        }
+    }
+
+    /// Paint one render of the frame into `img_rect` (clipped by the painter):
+    /// the best texture available for it, falling back to the fit preview.
+    fn paint_side(&self, painter: &egui::Painter, img_rect: egui::Rect, side: Side, zoomed: bool) {
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        let white = egui::Color32::WHITE;
+        let draw = |t: &egui::TextureHandle| {
+            painter.image(t.id(), img_rect, uv, white);
+        };
+        match side {
+            Side::Before => {
+                let neutral = Edit { preset: None, ..self.edit.clone() };
+                match (&self.full_before_tex, &self.fit_before) {
+                    (Some((t, e)), _) if zoomed && *e == neutral => draw(t),
+                    (_, Some(t)) => draw(t),
+                    _ => {}
+                }
+            }
+            Side::Other => {
+                let other = self.other_edit();
+                match (&self.full_other_tex, &self.fit_other) {
+                    (Some((t, e)), _) if zoomed && *e == other => draw(t),
+                    // While sliders move, the last render of the same film stands in.
+                    (_, Some((t, e))) if e.preset == other.preset => draw(t),
+                    _ => {}
+                }
+            }
+            Side::After => {
+                // Best available: full-res render (possibly of an older edit), else
+                // the fit preview stretched; then the fresh patch on top.
+                let current = self.current_key().cloned();
+                let full_current = self.full_tex.as_ref().is_some_and(|f| Some(&f.1) == current.as_ref());
+                match (&self.full_tex, zoomed) {
+                    (Some((t, _)), true) => draw(t),
+                    _ => {
+                        if let Some(t) = &self.fit_after {
+                            draw(t);
+                        }
+                    }
+                }
+                if zoomed && !full_current {
+                    if let Some((t, r, k)) = &self.patch {
+                        if Some(k) == current.as_ref() {
+                            let at = egui::Rect::from_min_max(img_rect.lerp_inside(egui::vec2(r[0], r[1])), img_rect.lerp_inside(egui::vec2(r[2], r[3])));
+                            painter.image(t.id(), at, uv, white);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1741,6 +2033,13 @@ const OUTPUT_INFO_NEGATIVE: &str = "How the negative is turned into a picture. \
     Optical print: printed on Kodak paper through its own curves and dyes, with richer colour and shorter highlights.";
 
 const OUTPUT_INFO_MONO: &str = "Black-and-white negatives are shown as a lab scan. Kodak publishes no paper data to print them on.";
+
+const EXPORT_LOOK_INFO: &str = "Which settings the export buttons below use. \
+Each frame's own edit exports frames as you left them. \
+Settings of the frame you're editing applies its film and every adjustment to all exported frames. \
+Choosing a film keeps each frame's own exposure, colour and other adjustments and swaps only the film, \
+so a whole shoot can be exported as Portra, say, after editing it as Kodachrome. \
+Saved edits are not changed.";
 
 const OUTPUT_INFO: &str = "How the slide is turned into a picture. \
     Scanned slide: as a film scanner reads it, with open shadows and the scanner's colour balance. \
@@ -1906,9 +2205,11 @@ fn draw_toast(ctx: &egui::Context, toast: &mut Option<(String, std::time::Instan
     ctx.request_repaint_after(std::time::Duration::from_millis(30));
 }
 
-fn badge(ui: &mut egui::Ui, rect: egui::Rect, text: &str) {
+/// A label over the top corner of the preview (`right` for the top right).
+fn badge(ui: &mut egui::Ui, rect: egui::Rect, text: &str, right: bool) {
     let area = egui::Rect::from_min_size(rect.min + egui::vec2(12.0, 12.0), egui::vec2(rect.width() - 24.0, 30.0));
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::left_to_right(egui::Align::Min)));
+    let layout = if right { egui::Layout::right_to_left(egui::Align::Min) } else { egui::Layout::left_to_right(egui::Align::Min) };
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(layout));
     egui::Frame::new()
         .fill(egui::Color32::from_black_alpha(190))
         .corner_radius(3.0)

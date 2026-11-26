@@ -13,7 +13,7 @@ use remjet_core::edit::ExportOptions;
 use remjet_core::film::{FilmModel, FilmParams, FilmPreset};
 use remjet_core::{output, raw};
 
-const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | ektachrome-e100vs | ektachrome-e200 | portra160 | portra400 | portra800 | ektar100 | gold200 | ultramax400 | trix400 | tmax100 | tmax400 | <preset.toml>]\n                  [--grain <amount>] [--no-fit] [--no-scanner-colour] [--print] [--push <stops>]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only]\n      (uses each file's saved app edit; default output is <folder>/exports)";
+const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | ektachrome-e100vs | ektachrome-e200 | portra160 | portra400 | portra800 | ektar100 | gold200 | ultramax400 | trix400 | tmax100 | tmax400 | <preset.toml>]\n                  [--grain <amount>] [--no-fit] [--no-scanner-colour] [--print] [--push <stops>]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only] [--film <preset id>] [--film-in-name]\n      (uses each file's saved app edit, with --film swapping its film; default output is <folder>/exports)";
 
 /// Batch export using the app's sidecar edits.
 fn export(args: &[String]) -> Result<()> {
@@ -21,6 +21,7 @@ fn export(args: &[String]) -> Result<()> {
     let mut out_dir: Option<PathBuf> = None;
     let mut opts = ExportOptions::default();
     let mut edited_only = false;
+    let mut film: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -29,11 +30,16 @@ fn export(args: &[String]) -> Result<()> {
             "--quality" => opts.quality = it.next().context("--quality needs a value")?.parse()?,
             "--no-exif" => opts.keep_exif = false,
             "--edited-only" => edited_only = true,
+            "--film" => film = Some(it.next().context("--film needs a preset id")?.clone()),
+            "--film-in-name" => opts.film_in_name = true,
             _ => inputs.push(a.clone()),
         }
     }
     if inputs.is_empty() {
         bail!(USAGE);
+    }
+    if let Some(id) = &film {
+        remjet_core::presets::load(id).with_context(|| format!("unknown film {id}"))?;
     }
     let files = collect_dngs(&inputs)?;
     let (mut ok, mut failed, mut skipped, mut not_m9) = (0, 0, 0, 0);
@@ -49,7 +55,11 @@ fn export(args: &[String]) -> Result<()> {
         }
         let dir = out_dir.clone().unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("exports"));
         let start = Instant::now();
-        match remjet_core::edit::export_jpeg(path, &saved.unwrap_or_default(), &dir, &opts) {
+        let mut e = saved.unwrap_or_default();
+        if let Some(id) = &film {
+            e = remjet_core::edit::with_film(&e, Some(id));
+        }
+        match remjet_core::edit::export_jpeg(path, &e, &dir, &opts) {
             Ok(out) => {
                 ok += 1;
                 println!("{} -> {} ({} ms)", path.display(), out.display(), start.elapsed().as_millis());
