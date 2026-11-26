@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.7
 
 - **Saturated colours no longer wash out.** Bright, saturated colours (a yellow car most of all)
   came out pale and creamy on the colour negatives and Kodachrome 64. The cause was a missing
