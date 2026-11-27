@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Remjet</string>
+    <string name="open">Open DNG</string>
+    <string name="export">Export JPEG</string>
+    <string name="film">Film</string>
+    <string name="size">Size</string>
+    <string name="neutral">Neutral (no film)</string>
+    <string name="size_full">Full (18 MP)</string>
+    <string name="size_half">Half (4.5 MP, lighter)</string>
+    <string name="empty">Open a Leica M9 DNG to start.</string>
+</resources>

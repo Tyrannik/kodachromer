@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/remjet-core", "crates/remjet-cli", "crates/remjet"]
+members = ["crates/remjet-core", "crates/remjet-cli", "crates/remjet", "crates/remjet-android"]
 
 [workspace.package]
 version = "0.1.0-alpha.8"

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Android app (experimental).** Open an M9 DNG on a phone, pick any film (or neutral), and export
+  a JPEG at full (18 MP) or half (4.5 MP) size, with the camera's EXIF kept. It uses the same
+  processing as the desktop app. Android 7.0 or newer; releases include
+  `Remjet-<version>-android.apk`. See [docs/ANDROID.md](docs/ANDROID.md).
+
 ## 0.1.0-alpha.8
 
 - **Five new films from Kodak datasheets**, each digitised from its own publication's vector plots

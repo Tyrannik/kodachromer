@@ -82,6 +82,10 @@ code-signed yet (free signing through SignPath Foundation is being applied for; 
 [Code signing policy](#code-signing-policy)). Choose *More info → Run anyway*, or build it yourself
 from source (below).
 
+**Android (experimental):** `Remjet-<version>-android.apk` on the same page opens a DNG on a
+phone, applies a film and exports a JPEG. Android 7.0 or newer. See
+[docs/ANDROID.md](docs/ANDROID.md) for installing it.
+
 ## Using it
 
 1. **Open folder…** and choose a folder of M9 DNGs. Thumbnails appear in the library.
