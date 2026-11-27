@@ -13,7 +13,7 @@ use remjet_core::edit::ExportOptions;
 use remjet_core::film::{FilmModel, FilmParams, FilmPreset};
 use remjet_core::{output, raw};
 
-const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | ektachrome-e100vs | ektachrome-e200 | portra160 | portra400 | portra800 | ektar100 | gold200 | ultramax400 | trix400 | tmax100 | tmax400 | <preset.toml>]\n                  [--grain <amount>] [--no-fit] [--no-scanner-colour] [--print] [--push <stops>]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only] [--film <preset id>] [--film-in-name]\n      (uses each file's saved app edit, with --film swapping its film; default output is <folder>/exports)";
+const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | ektachrome-e100vs | ektachrome-e200 | portra160 | portra400 | portra800 | ektar100 | gold200 | ultramax400 | trix400 | tmax100 | tmax400 | <preset.toml>]\n                  [--grain <amount>] [--no-fit] [--no-scanner-colour] [--print] [--push <stops>]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--no-gps] [--no-look] [--edited-only] [--film <preset id>] [--film-in-name]\n      (uses each file's saved app edit, with --film swapping its film; default output is <folder>/exports)";
 
 /// Batch export using the app's sidecar edits.
 fn export(args: &[String]) -> Result<()> {
@@ -29,6 +29,8 @@ fn export(args: &[String]) -> Result<()> {
             "--max-edge" => opts.max_edge = Some(it.next().context("--max-edge needs a value")?.parse()?),
             "--quality" => opts.quality = it.next().context("--quality needs a value")?.parse()?,
             "--no-exif" => opts.keep_exif = false,
+            "--no-gps" => opts.keep_location = false,
+            "--no-look" => opts.record_look = false,
             "--edited-only" => edited_only = true,
             "--film" => film = Some(it.next().context("--film needs a preset id")?.clone()),
             "--film-in-name" => opts.film_in_name = true,
