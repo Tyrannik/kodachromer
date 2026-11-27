@@ -30,8 +30,10 @@ Neutral camera render (left) vs. Kodachrome 64 (right), straight out of Remjet w
 ![Roadside shrine](docs/images/compare-L1004071.jpg)
 ![Lighthouse](docs/images/compare-L1003695.jpg)
 
-Optional **halation**, the red glow around bright lights that film without an anti-halation layer shows
-(off by default, since real Kodachrome had one):
+**Halation**, the red glow film shows around bright lights, follows each film's anti-halation
+protection: faint on every Kodak still film (Kodachrome's rem-jet backing protects best), with its
+spread set by the base thickness in the datasheet. Turn it up towards 1 for the strong glow of film
+with no backing at all:
 
 ![Halation off vs on](docs/images/halation.jpg)
 

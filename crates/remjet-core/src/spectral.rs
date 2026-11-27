@@ -1286,7 +1286,7 @@ mod datasheet_tests {
             let x = c.develop.x0 + c.develop.step * k as f64;
             assert!(d.iter().all(|v| (v - ds.curves.green.at(x)).abs() < 1e-9));
         }
-        let m = FilmModel::new(&p, &FilmParams { grain: 0.0, halation: 1.0, ..Default::default() }).unwrap();
+        let m = FilmModel::new(&p, &FilmParams { grain: 0.0, halation: Some(1.0), ..Default::default() }).unwrap();
         let g = p.exposure.grey_linear as f32;
         // Coloured light still gives a neutral (grey) result.
         for rgb in [[g, g, g], [g * 3.0, g * 0.2, g * 0.1], [g * 0.1, g * 0.5, g * 4.0], [1.0, 0.5, 0.05]] {

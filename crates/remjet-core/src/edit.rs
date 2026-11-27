@@ -17,7 +17,9 @@ use crate::{output, raw};
 /// pre-release builds; found files are imported into the edit store and removed.
 const SIDECAR_SUFFIX: &str = ".kodachromer.json";
 const LEGACY_SIDECAR_SUFFIX: &str = ".m9film.json";
-const EDIT_VERSION: u32 = 1;
+/// 2: halation follows each film (`None`) unless set, with on/off toggles
+/// for grain and halation.
+const EDIT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -31,7 +33,9 @@ pub struct Edit {
     pub warmth: f32,
     /// White balance tint, -1 (green) .. +1 (magenta), relative to as shot.
     pub tint: f32,
-    /// Grain multiplier (1 = preset default, 0 = off).
+    /// Film grain on or off (keeps the strength for when it's turned back on).
+    pub grain_on: bool,
+    /// Grain multiplier (1 = the film's own, from its datasheet).
     pub grain: f32,
     /// Grain clump size multiplier (1 = preset default).
     pub grain_size: f32,
@@ -46,8 +50,11 @@ pub struct Edit {
     pub scanner_colour: bool,
     /// Detail sharpening (like a scanner's), 0 = off.
     pub sharpen: f32,
-    /// Halation glow around bright highlights, 0 = off .. 1 = strong.
-    pub halation: f32,
+    /// Halation (glow around bright highlights) on or off.
+    pub halation_on: bool,
+    /// Halation strength, 0 .. 1 (1 = film with no anti-halation protection
+    /// at all). `None` uses the film's own, set by its anti-halation backing.
+    pub halation: Option<f32>,
     /// Scanned or projected slide.
     pub output: OutputMode,
     /// Push (+) or pull (-) processing in stops; 0 = normal. Only values
@@ -63,14 +70,17 @@ impl Default for Edit {
             exposure_ev: 0.0,
             warmth: 0.0,
             tint: 0.0,
+            grain_on: true,
             grain: 1.0,
             grain_size: 1.0,
             highlights: 0.0,
             fit_highlights: true,
             scanner_colour: true,
             sharpen: 0.3,
-            // Kodachrome had an anti-halation backing, so off by default.
-            halation: 0.0,
+            // Each film's own, from its anti-halation backing (faint on
+            // every Kodak still film; they all have one).
+            halation_on: true,
+            halation: None,
             output: OutputMode::Scan,
             push: 0,
         }
@@ -78,6 +88,18 @@ impl Default for Edit {
 }
 
 impl Edit {
+    /// Bring an edit saved by an earlier version up to date. Version 1 kept
+    /// halation as one number with 0 (the default) meaning off: that is now
+    /// the toggle, so those images still render without halation.
+    pub fn migrated(mut self) -> Self {
+        if self.version < 2 && self.halation == Some(0.0) {
+            self.halation_on = false;
+            self.halation = None;
+        }
+        self.version = EDIT_VERSION;
+        self
+    }
+
     /// White-balance multipliers (R, G, B) for the warmth/tint sliders.
     /// Full slider travel is about +/-1500 K around daylight.
     pub fn wb_adjust(&self) -> [f32; 3] {
@@ -155,7 +177,7 @@ fn import_sidecar(dir: &Path, dng: &Path) -> Option<Edit> {
     for suffix in [SIDECAR_SUFFIX, LEGACY_SIDECAR_SUFFIX] {
         let side = with_suffix(dng, suffix);
         let Ok(text) = std::fs::read_to_string(&side) else { continue };
-        let edit: Edit = serde_json::from_str(&text).ok()?;
+        let edit = serde_json::from_str::<Edit>(&text).ok()?.migrated();
         // Only delete the old file once the edit is safely in the store.
         if save_in(dir, dng, &edit).is_ok() {
             let _ = std::fs::remove_file(&side);
@@ -170,7 +192,7 @@ pub fn load_in(dir: &Path, dng: &Path) -> Option<Edit> {
     if let Some(path) = store_file(dir, dng) {
         if let Ok(text) = std::fs::read_to_string(path) {
             if let Ok(stored) = serde_json::from_str::<StoredEdit>(&text) {
-                return Some(stored.edit);
+                return Some(stored.edit.migrated());
             }
         }
     }
@@ -271,12 +293,12 @@ fn render_framed(
                 None => crate::presets::load(id)?,
             };
             let params = FilmParams {
-                grain: edit.grain as f64,
+                grain: if edit.grain_on { edit.grain as f64 } else { 0.0 },
                 grain_size: edit.grain_size as f64,
                 highlights: edit.highlights as f64,
                 sensor_white: edit.fit_highlights.then(|| cam.clip_white()),
                 scanner_colour: edit.scanner_colour,
-                halation: edit.halation as f64,
+                halation: if edit.halation_on { edit.halation.map(f64::from) } else { Some(0.0) },
                 push: if preset.supports_push(edit.push) { edit.push } else { 0 },
                 output: edit.output,
                 pixel_scale,
@@ -482,6 +504,18 @@ mod tests {
         let k64 = with_film(&Edit { push: 1, ..neg }, Some("kodachrome64"));
         assert_eq!(k64.push, 0, "Kodachrome has no push");
         assert_eq!(with_film(&slide, None).preset, None);
+    }
+
+    #[test]
+    fn version_1_halation_off_becomes_the_toggle() {
+        let off: Edit = serde_json::from_str(r#"{"version": 1, "halation": 0.0}"#).unwrap();
+        let off = off.migrated();
+        assert!(!off.halation_on && off.halation.is_none());
+        let set: Edit = serde_json::from_str(r#"{"version": 1, "halation": 0.4}"#).unwrap();
+        let set = set.migrated();
+        assert!(set.halation_on && set.halation == Some(0.4), "a chosen strength is kept");
+        let new = Edit::default().migrated();
+        assert!(new.halation_on && new.halation.is_none(), "current edits are untouched");
     }
 
     #[test]

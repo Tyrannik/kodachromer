@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **Grain and halation per film.** Both now have an on/off switch and a strength slider, each with an
+  (i) explaining where it comes from.
+  - **Halation is on by default at each film's own strength**, set by its anti-halation protection:
+    faint on every Kodak still film, least on Kodachrome (rem-jet backing), a little more on the
+    Ektachromes and colour negatives (undercoat) and the black-and-white films. Its spread now
+    follows each film's base thickness from the datasheet (0.10 mm ESTAR for Portra and Ektar,
+    0.13 mm acetate for the Ektachromes, 5.3 mil for Kodachrome), so it hugs lights more tightly than
+    before. Strength 1 is film with no protection at all, like motion-picture film with its rem-jet
+    removed. Images you set halation on keep their value; images with it at 0 have it switched off.
+    Kodak publishes no halation figure, so the strengths are estimates.
+  - **Pushed film is grainier, pulled film finer**, in step with the development's extra contrast
+    (Portra 400 push 2: 1.3x; Tri-X push 2: 1.16x; a film merely rated faster is unchanged).
+  - **The fit-to-window preview no longer overstates grain.** It showed about 1.4x the grain of the
+    same image scaled down from 100%; it now matches within a few percent, and the preview is
+    mipmapped so a smaller window averages grain instead of sampling it.
+  - CLI: `render --halation <0-1>`.
+
 ## 0.1.0-alpha.8
 
 - **Five new films from Kodak datasheets**, each digitised from its own publication's vector plots

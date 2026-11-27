@@ -2,7 +2,7 @@
 //!
 //!   remjet-cli info   <files or folders...>
 //!   remjet-cli render <files or folders...> --out <folder> [--half] [--ev <stops>]
-//!                   [--preset kodachrome64 | ektachrome-e100 | ektachrome-e100vs | ektachrome-e200 | portra160 | portra400 | portra800 | ektar100 | gold200 | ultramax400 | trix400 | tmax100 | tmax400 | <preset.toml>] [--grain <amount>] [--no-fit] [--no-scanner-colour] [--print] [--push <stops>]
+//!                   [--preset kodachrome64 | ektachrome-e100 | ektachrome-e100vs | ektachrome-e200 | portra160 | portra400 | portra800 | ektar100 | gold200 | ultramax400 | trix400 | tmax100 | tmax400 | <preset.toml>] [--grain <amount>] [--halation <0-1>] [--no-fit] [--no-scanner-colour] [--print] [--push <stops>]
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -13,7 +13,7 @@ use remjet_core::edit::ExportOptions;
 use remjet_core::film::{FilmModel, FilmParams, FilmPreset};
 use remjet_core::{output, raw};
 
-const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | ektachrome-e100vs | ektachrome-e200 | portra160 | portra400 | portra800 | ektar100 | gold200 | ultramax400 | trix400 | tmax100 | tmax400 | <preset.toml>]\n                  [--grain <amount>] [--no-fit] [--no-scanner-colour] [--print] [--push <stops>]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only] [--film <preset id>] [--film-in-name]\n      (uses each file's saved app edit, with --film swapping its film; default output is <folder>/exports)";
+const USAGE: &str = "usage:\n  remjet-cli info <raw file | folder>...\n  remjet-cli render <raw file | folder>... --out <folder> [--half] [--ev <stops>]\n                  [--preset kodachrome64 | ektachrome-e100 | ektachrome-e100vs | ektachrome-e200 | portra160 | portra400 | portra800 | ektar100 | gold200 | ultramax400 | trix400 | tmax100 | tmax400 | <preset.toml>]\n                  [--grain <amount>] [--halation <0-1>] [--no-fit] [--no-scanner-colour] [--print] [--push <stops>]\n  remjet-cli export <raw file | folder>... [--out <folder>] [--max-edge <px>] [--quality <1-100>]\n                  [--no-exif] [--edited-only] [--film <preset id>] [--film-in-name]\n      (uses each file's saved app edit, with --film swapping its film; default output is <folder>/exports)";
 
 /// Batch export using the app's sidecar edits.
 fn export(args: &[String]) -> Result<()> {
@@ -177,6 +177,7 @@ fn render(args: &[String]) -> Result<()> {
                 film_params.push = it.next().context("--push needs a number of stops (negative to pull)")?.parse()?
             }
             "--grain" => film_params.grain = it.next().context("--grain needs a value")?.parse()?,
+            "--halation" => film_params.halation = Some(it.next().context("--halation needs a value (0-1)")?.parse()?),
             "--preset" => {
                 let p = it.next().context("--preset needs a name or .toml path")?;
                 preset = Some(if p.ends_with(".toml") {
