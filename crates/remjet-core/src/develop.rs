@@ -103,9 +103,9 @@ pub struct CameraImage {
     /// Sensor pixel pitch in micrometres (of the full-resolution sensor, not
     /// of this possibly downscaled copy), for physically sized film effects.
     pub pixel_pitch_um: f64,
-    cm_a: Mat3,
-    cm_d65: Mat3,
-    baseline_ev: f32,
+    pub(crate) cm_a: Mat3,
+    pub(crate) cm_d65: Mat3,
+    pub(crate) baseline_ev: f32,
 }
 
 pub fn develop(raw: &RawImage, params: &DevelopParams) -> Result<LinearImage> {
@@ -117,11 +117,7 @@ pub fn develop(raw: &RawImage, params: &DevelopParams) -> Result<LinearImage> {
 /// balance (for warmth/tint sliders); the colour matrix is solved for the
 /// combined white balance so the DNG profile interpolation stays correct.
 pub fn to_working(cam: &CameraImage, wb_adjust: [f32; 3], exposure_ev: f32) -> Result<LinearImage> {
-    let total = [0, 1, 2].map(|i| (cam.wb[i] * wb_adjust[i]) as f64);
-    let (m, cct) = color::camera_to_working(&cam.cm_a, &cam.cm_d65, &total).context("singular colour matrix")?;
-    let m = color::mul(&m, &color::diag(&wb_adjust.map(f64::from)));
-    let gain = 2f64.powf((cam.baseline_ev + exposure_ev) as f64);
-    let m: [[f32; 3]; 3] = m.map(|row| row.map(|v| (v * gain) as f32));
+    let (m, cct) = cam.working_matrix(wb_adjust, exposure_ev)?;
     let pixels = cam
         .pixels
         .par_iter()
@@ -131,6 +127,16 @@ pub fn to_working(cam: &CameraImage, wb_adjust: [f32; 3], exposure_ev: f32) -> R
 }
 
 impl CameraImage {
+    /// The matrix [`to_working`] applies to camera RGB, and the white
+    /// balance's estimated CCT.
+    pub fn working_matrix(&self, wb_adjust: [f32; 3], exposure_ev: f32) -> Result<([[f32; 3]; 3], f64)> {
+        let total = [0, 1, 2].map(|i| (self.wb[i] * wb_adjust[i]) as f64);
+        let (m, cct) = color::camera_to_working(&self.cm_a, &self.cm_d65, &total).context("singular colour matrix")?;
+        let m = color::mul(&m, &color::diag(&wb_adjust.map(f64::from)));
+        let gain = 2f64.powf((self.baseline_ev + exposure_ev) as f64);
+        Ok((m.map(|row| row.map(|v| (v * gain) as f32)), cct))
+    }
+
     /// Working-space value at which the sensor clipped, at the file's base
     /// exposure (before the user's exposure adjustment).
     pub fn clip_white(&self) -> f64 {
@@ -177,7 +183,23 @@ impl CameraImage {
         CameraImage { width: w, height: h, pixels, ..self.clone_meta() }
     }
 
-    fn clone_meta(&self) -> CameraImage {
+    /// A camera image from given pixels, with a fixed colour profile and
+    /// white balance (for tests).
+    #[cfg(test)]
+    pub(crate) fn synthetic(width: usize, height: usize, pixels: Vec<[f32; 3]>) -> CameraImage {
+        CameraImage {
+            width,
+            height,
+            pixels,
+            wb: [2.0, 1.0, 1.5],
+            pixel_pitch_um: crate::sensor::M9_PIXEL_UM,
+            cm_a: color::XYZ_D50_TO_PROPHOTO,
+            cm_d65: color::XYZ_D50_TO_PROPHOTO,
+            baseline_ev: 0.0,
+        }
+    }
+
+    pub(crate) fn clone_meta(&self) -> CameraImage {
         CameraImage {
             width: 0,
             height: 0,

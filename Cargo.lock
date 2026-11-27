@@ -3308,11 +3308,13 @@ dependencies = [
  "image",
  "jpeg-encoder",
  "moxcms",
+ "pollster",
  "rawler",
  "rayon",
  "serde",
  "serde_json",
  "toml 1.2.2+spec-1.1.0",
+ "wgpu",
 ]
 
 [[package]]

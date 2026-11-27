@@ -285,31 +285,46 @@ fn render_framed(
     frame: GrainFrame,
 ) -> Result<RgbImage> {
     let mut linear = develop::to_working(cam, edit.wb_adjust(), edit.exposure_ev)?;
-    develop::sharpen(&mut linear, edit.sharpen, (0.8 / pixel_scale) as f32);
-    Ok(match &edit.preset {
-        Some(id) => {
-            let preset = match preset_override {
-                Some(p) => p.clone(),
-                None => crate::presets::load(id)?,
-            };
-            let params = FilmParams {
-                grain: if edit.grain_on { edit.grain as f64 } else { 0.0 },
-                grain_size: edit.grain_size as f64,
-                highlights: edit.highlights as f64,
-                sensor_white: edit.fit_highlights.then(|| cam.clip_white()),
-                scanner_colour: edit.scanner_colour,
-                halation: if edit.halation_on { edit.halation.map(f64::from) } else { Some(0.0) },
-                push: if preset.supports_push(edit.push) { edit.push } else { 0 },
-                output: edit.output,
-                pixel_scale,
-                sensor_pixel_um: cam.pixel_pitch_um,
-                seed,
-                ..Default::default()
-            };
-            output::display_to_srgb8(&FilmModel::new(&preset, &params)?.apply_framed(&linear, seed, frame))
-        }
+    develop::sharpen(&mut linear, edit.sharpen, sharpen_sigma(pixel_scale));
+    Ok(match film_model(cam, edit, preset_override, pixel_scale, seed)? {
+        Some(model) => output::display_to_srgb8(&model.apply_framed(&linear, seed, frame)),
         None => output::to_srgb8(&linear),
     })
+}
+
+/// Sharpening radius in output pixels.
+pub(crate) fn sharpen_sigma(pixel_scale: f64) -> f32 {
+    (0.8 / pixel_scale) as f32
+}
+
+/// The film model an edit renders with (`None` for the neutral render).
+pub(crate) fn film_model(
+    cam: &CameraImage,
+    edit: &Edit,
+    preset_override: Option<&FilmPreset>,
+    pixel_scale: f64,
+    seed: u64,
+) -> Result<Option<FilmModel>> {
+    let Some(id) = &edit.preset else { return Ok(None) };
+    let preset = match preset_override {
+        Some(p) => p.clone(),
+        None => crate::presets::load(id)?,
+    };
+    let params = FilmParams {
+        grain: if edit.grain_on { edit.grain as f64 } else { 0.0 },
+        grain_size: edit.grain_size as f64,
+        highlights: edit.highlights as f64,
+        sensor_white: edit.fit_highlights.then(|| cam.clip_white()),
+        scanner_colour: edit.scanner_colour,
+        halation: if edit.halation_on { edit.halation.map(f64::from) } else { Some(0.0) },
+        push: if preset.supports_push(edit.push) { edit.push } else { 0 },
+        output: edit.output,
+        pixel_scale,
+        sensor_pixel_um: cam.pixel_pitch_um,
+        seed,
+        ..Default::default()
+    };
+    Ok(Some(FilmModel::new(&preset, &params)?))
 }
 
 /// Render a rectangle (sensor coordinates, full resolution) of a full-frame

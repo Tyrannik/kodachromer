@@ -293,14 +293,14 @@ impl FilmPreset {
 
 /// Uniformly sampled curve for fast lookup, clamped at both ends.
 #[derive(Debug, Clone)]
-struct Lut {
-    x0: f64,
-    step: f64,
-    y: Vec<f32>,
+pub(crate) struct Lut {
+    pub(crate) x0: f64,
+    pub(crate) step: f64,
+    pub(crate) y: Vec<f32>,
 }
 
 impl Lut {
-    const N: usize = 2048;
+    pub(crate) const N: usize = 2048;
 
     fn from_fn(x0: f64, x1: f64, f: impl Fn(f64) -> f64) -> Self {
         let step = (x1 - x0) / (Self::N - 1) as f64;
@@ -452,7 +452,7 @@ fn into_gamut(c: [f32; 3]) -> [f32; 3] {
 }
 
 /// Highlight knee: one stop above mid-grey, in log10 exposure.
-const HIGHLIGHT_KNEE: f32 = 0.30;
+pub(crate) const HIGHLIGHT_KNEE: f32 = 0.30;
 /// How close to the clear base counts as the film's white when fitting the
 /// camera's range: 0.97 transmittance of the base (about 251/255 in sRGB),
 /// so the camera's last recorded stop still has tone in it.
@@ -463,10 +463,10 @@ const FILM_WHITE_DENSITY: f64 = 0.0132;
 /// (`white`, relative to the knee). Slope 1 at the knee, so mid-tones are
 /// untouched and there is no visible kink; linear beyond the clip point.
 #[derive(Debug, Clone, Copy)]
-struct HighlightFit {
-    clip: f32,
-    k: f32,
-    end_slope: f32,
+pub(crate) struct HighlightFit {
+    pub(crate) clip: f32,
+    pub(crate) k: f32,
+    pub(crate) end_slope: f32,
 }
 
 impl HighlightFit {
@@ -497,47 +497,47 @@ use crate::sensor::M9_PIXEL_UM;
 const GRANULARITY_APERTURE_UM: f64 = 48.0;
 
 pub struct FilmModel {
-    to_layers: [[f32; 3]; 3],
-    log_offset: f32,
-    grey_log_e: f32,
-    contrast: f32,
+    pub(crate) to_layers: [[f32; 3]; 3],
+    pub(crate) log_offset: f32,
+    pub(crate) grey_log_e: f32,
+    pub(crate) contrast: f32,
     /// Flare pedestal added to layer exposures (input units).
-    flare: f32,
+    pub(crate) flare: f32,
     /// Slope of log exposure above the highlight knee (1 = unchanged).
-    highlight_slope: f32,
+    pub(crate) highlight_slope: f32,
     /// Fits the camera's highlight range onto the film's (above the knee).
-    highlight_fit: HighlightFit,
-    interimage: f32,
-    engine: Engine,
+    pub(crate) highlight_fit: HighlightFit,
+    pub(crate) interimage: f32,
+    pub(crate) engine: Engine,
     /// Per-layer spread from the datasheet MTF (sigma px, k, wide sigma px).
-    spread: Option<[(f32, f32, f32); 3]>,
+    pub(crate) spread: Option<[(f32, f32, f32); 3]>,
     /// Per channel (offset, scale) applied to integral density by the scanner.
-    balance: [(f32, f32); 3],
-    t_white: f32,
-    t_black: f32,
-    inv_gamma: f32,
-    scan_wb: [f32; 3],
+    pub(crate) balance: [(f32, f32); 3],
+    pub(crate) t_white: f32,
+    pub(crate) t_black: f32,
+    pub(crate) inv_gamma: f32,
+    pub(crate) scan_wb: [f32; 3],
     /// Scanner colour matrix (scanner channels -> linear sRGB), if any.
-    scan_matrix: Option<[[f32; 3]; 3]>,
-    grain_sigma: f32,
+    pub(crate) scan_matrix: Option<[[f32; 3]; 3]>,
+    pub(crate) grain_sigma: f32,
     /// Halation: gain, blur sigma in output pixels, threshold (input units), tint.
-    hal_gain: f32,
-    hal_sigma: f32,
-    hal_threshold: f32,
-    hal_tint: [f32; 3],
-    output: OutputMode,
-    proj_flare: f32,
-    proj_wb: [f32; 3],
-    proj_falloff: f32,
-    grain_corr: f32,
-    grain_blur: f32,
+    pub(crate) hal_gain: f32,
+    pub(crate) hal_sigma: f32,
+    pub(crate) hal_threshold: f32,
+    pub(crate) hal_tint: [f32; 3],
+    pub(crate) output: OutputMode,
+    pub(crate) proj_flare: f32,
+    pub(crate) proj_wb: [f32; 3],
+    pub(crate) proj_falloff: f32,
+    pub(crate) grain_corr: f32,
+    pub(crate) grain_blur: f32,
 }
 
 const LOG_E_MIN: f64 = -4.0;
 const LOG_E_MAX: f64 = 2.0;
 
 /// How developed film is computed from per-layer log exposure.
-enum Engine {
+pub(crate) enum Engine {
     /// Analytical density per layer, then the dye cross-talk matrix; the
     /// state is the integral (scanner) density itself.
     Matrix { analytical: [Lut; 3], dyes: [[f32; 3]; 3] },
@@ -559,7 +559,7 @@ impl Engine {
     }
 
     /// Scanner-channel density (R, G, B) of a developed state.
-    fn finish(&self, s: [f32; 3]) -> [f32; 3] {
+    pub(crate) fn finish(&self, s: [f32; 3]) -> [f32; 3] {
         match self {
             Self::Matrix { .. } => s,
             Self::Spectral { core, lab_scan, .. } => {
@@ -976,7 +976,7 @@ fn smooth_blur(plane: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
 }
 
 /// Halation exposure gain at strength 1.0.
-const HALATION_GAIN: f64 = 0.8;
+pub(crate) const HALATION_GAIN: f64 = 0.8;
 
 /// A development's contrast: the mean gradient of its green (or silver)
 /// curve between 0.3 and 1.3 above its minimum density (as Kodak's contrast
@@ -1026,7 +1026,7 @@ fn find_log_e(f: impl Fn(f64) -> f64, target: f64, mut lo: f64, mut hi: f64) -> 
 // --------------------------------------------------------------------- grain
 
 /// SplitMix64: tiny, fast, good-enough hash for per-pixel noise.
-fn splitmix(mut x: u64) -> u64 {
+pub(crate) fn splitmix(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -1073,33 +1073,59 @@ fn grain_field(seed: u64, w: usize, h: usize, blur_sigma: f32, frame: GrainFrame
 /// Separable Gaussian blur of a single-channel field, returning the factor by
 /// which it reduced the standard deviation of white noise.
 pub(crate) fn blur(field: &mut [f32], w: usize, h: usize, sigma: f32) -> f32 {
-    if sigma < 0.05 {
+    let Some((k, gain)) = blur_kernel(sigma) else {
         return 1.0;
+    };
+    let r = k.len() / 2;
+    let mut tmp = vec![0f32; field.len()];
+    // Each output is the taps summed in order from -0.0 (as `Iterator::sum`
+    // does); edges clamp to the border pixel. The interior skips the clamp,
+    // and the vertical pass walks whole rows for cache-friendly access.
+    tmp.par_chunks_exact_mut(w).zip(field.par_chunks_exact(w)).for_each(|(out, row)| {
+        let clamped = |x: usize| -> f32 {
+            k.iter().enumerate().fold(-0.0, |acc, (j, kv)| acc + kv * row[(x + j).saturating_sub(r).min(w - 1)])
+        };
+        if w <= 2 * r {
+            for (x, o) in out.iter_mut().enumerate() {
+                *o = clamped(x);
+            }
+            return;
+        }
+        for x in (0..r).chain(w - r..w) {
+            out[x] = clamped(x);
+        }
+        for (x, o) in out[r..w - r].iter_mut().enumerate() {
+            let src = &row[x..x + 2 * r + 1];
+            *o = k.iter().zip(src).fold(-0.0, |acc, (kv, v)| acc + kv * v);
+        }
+    });
+    field.par_chunks_exact_mut(w).enumerate().for_each(|(y, out)| {
+        out.fill(-0.0);
+        for (j, kv) in k.iter().enumerate() {
+            let yy = (y + j).saturating_sub(r).min(h - 1);
+            let src = &tmp[yy * w..(yy + 1) * w];
+            for (o, v) in out.iter_mut().zip(src) {
+                *o += kv * v;
+            }
+        }
+    });
+    gain
+}
+
+/// Normalised Gaussian taps (2r + 1 of them) for [`blur`], and the factor by
+/// which the 2D blur reduces the standard deviation of white noise. `None`
+/// when sigma is too small to blur at all.
+pub(crate) fn blur_kernel(sigma: f32) -> Option<(Vec<f32>, f32)> {
+    if sigma < 0.05 {
+        return None;
     }
     let r = (sigma * 3.0).ceil() as isize;
     let k: Vec<f32> = (-r..=r).map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp()).collect();
     let sum: f32 = k.iter().sum();
     let k: Vec<f32> = k.iter().map(|v| v / sum).collect();
-    let mut tmp = vec![0f32; field.len()];
-    tmp.par_chunks_exact_mut(w).zip(field.par_chunks_exact(w)).for_each(|(out, row)| {
-        for x in 0..w {
-            out[x] = k.iter().enumerate().map(|(j, kv)| {
-                let xx = (x as isize + j as isize - r).clamp(0, w as isize - 1) as usize;
-                kv * row[xx]
-            }).sum();
-        }
-    });
-    field.par_chunks_exact_mut(w).enumerate().for_each(|(y, out)| {
-        for x in 0..w {
-            out[x] = k.iter().enumerate().map(|(j, kv)| {
-                let yy = (y as isize + j as isize - r).clamp(0, h as isize - 1) as usize;
-                kv * tmp[yy * w + x]
-            }).sum();
-        }
-    });
     // Std of blurred white noise = sqrt(sum k^2) per axis.
     let s: f32 = k.iter().map(|v| v * v).sum::<f32>().sqrt();
-    s * s
+    Some((k, s * s))
 }
 
 fn add_grain(dens: &mut [[f32; 3]], w: usize, h: usize, model: &FilmModel, seed: u64, frame: GrainFrame) {
@@ -1128,6 +1154,36 @@ fn add_grain(dens: &mut [[f32; 3]], w: usize, h: usize, model: &FilmModel, seed:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The straightforward blur [`blur`] is optimised from.
+    fn reference_blur(field: &mut [f32], w: usize, h: usize, sigma: f32) {
+        let Some((k, _)) = blur_kernel(sigma) else { return };
+        let r = (k.len() / 2) as isize;
+        let mut tmp = vec![0f32; field.len()];
+        for y in 0..h {
+            for x in 0..w {
+                tmp[y * w + x] = k.iter().enumerate().map(|(j, kv)| kv * field[y * w + (x as isize + j as isize - r).clamp(0, w as isize - 1) as usize]).sum();
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                field[y * w + x] = k.iter().enumerate().map(|(j, kv)| kv * tmp[(y as isize + j as isize - r).clamp(0, h as isize - 1) as usize * w + x]).sum();
+            }
+        }
+    }
+
+    #[test]
+    fn blur_matches_reference_exactly() {
+        for (w, h) in [(37, 23), (5, 40), (1, 9), (64, 2)] {
+            for sigma in [0.04, 0.3, 1.0, 2.7, 6.0] {
+                let mut a: Vec<f32> = (0..w * h).map(|i| gaussian(7, i as u64)).collect();
+                let mut b = a.clone();
+                blur(&mut a, w, h, sigma);
+                reference_blur(&mut b, w, h, sigma);
+                assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "{w}x{h} sigma {sigma}");
+            }
+        }
+    }
 
     fn model(grain: f64) -> (FilmPreset, FilmModel) {
         let p = FilmPreset::builtin("kodachrome64").unwrap();

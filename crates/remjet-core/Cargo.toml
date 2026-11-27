@@ -15,6 +15,12 @@ rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 toml = "1.2.2"
+pollster = { version = "1.0.3", optional = true }
+wgpu = { version = "30.0.2", optional = true }
+
+[features]
+# GPU preview renderer (the app turns this on; exports stay on the CPU).
+gpu = ["dep:wgpu", "dep:pollster"]
 
 [dev-dependencies]
 moxcms = "0.8.1"
