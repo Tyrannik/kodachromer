@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">Remjet</string>
     <string name="open">Open DNG</string>
+    <string name="samples">Samples</string>
     <string name="export">Export JPEG</string>
     <string name="film">Film</string>
     <string name="size">Size</string>

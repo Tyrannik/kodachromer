@@ -11,6 +11,7 @@ on:
     branches: ["**"]
     paths:
       - "android/**"
+      - "scripts/fetch-android-samples.py"
       - "crates/remjet-core/**"
       - "crates/remjet-android/**"
       - "presets/**"
@@ -20,6 +21,7 @@ on:
   pull_request:
     paths:
       - "android/**"
+      - "scripts/fetch-android-samples.py"
       - "crates/remjet-core/**"
       - "crates/remjet-android/**"
       - "presets/**"
@@ -58,7 +60,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -76,9 +78,14 @@ jobs:
       # the app supports.
       - name: Build native libraries
         run: >
-          cargo ndk --platform 24 -t arm64-v8a -t armeabi-v7a
+          cargo ndk --platform 24 -t arm64-v8a -t armeabi-v7a -t x86_64
           -o android/app/src/main/jniLibs
           build --release --locked -p remjet-android
+
+      # A few public-domain M9 DNGs from raw.pixls.us, for the app's Samples
+      # button. Warns (doesn't fail) if the site is down.
+      - name: Fetch sample DNGs
+        run: python3 scripts/fetch-android-samples.py 3
 
       - uses: gradle/actions/setup-gradle@v4
 
