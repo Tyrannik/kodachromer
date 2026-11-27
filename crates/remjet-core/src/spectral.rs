@@ -634,17 +634,17 @@ fn analytical_table(curves: &RgbSeries, stack: &DyeStack, w: &[Spectrum; 3]) -> 
 /// paper), through a 3D table of log XYZ under the viewing illuminant.
 #[derive(Debug, Clone)]
 pub struct Viewer {
-    lo: f32,
-    scale: f32,
-    log_xyz: Vec<[f32; 3]>,
+    pub(crate) lo: f32,
+    pub(crate) scale: f32,
+    pub(crate) log_xyz: Vec<[f32; 3]>,
     /// XYZ (D50) -> linear sRGB (D65), divided by the white's sRGB.
-    to_rgb: [[f32; 3]; 3],
+    pub(crate) to_rgb: [[f32; 3]; 3],
     /// Visual density of the white (base + minimum dye).
     pub white_density: f64,
 }
 
 impl Viewer {
-    const N: usize = 41;
+    pub(crate) const N: usize = 41;
 
     fn new(stack: &DyeStack, lo: f64, hi: f64, white: &Vec3) -> Self {
         let illum = daylight(VIEWING_CCT);
@@ -783,21 +783,21 @@ impl Printer {
 /// highlight shoulder, so the negative's highlight latitude survives.
 #[derive(Debug, Clone)]
 pub struct LabScan {
-    gain: Vec3,
-    dmin: Vec3,
+    pub(crate) gain: Vec3,
+    pub(crate) dmin: Vec3,
     /// Printing density (above base) of the reference grey, per channel.
-    p_ref: Vec3,
+    pub(crate) p_ref: Vec3,
     /// Printing density per log10 exposure at the reference grey.
-    slope: Vec3,
+    pub(crate) slope: Vec3,
     /// Scanner tone curve: output density = dmax / (1 + exp(k (rel - c))).
-    k: f64,
-    c: f64,
+    pub(crate) k: f64,
+    pub(crate) c: f64,
 }
 
 /// Scanner tone curve: deepest output density, density the reference grey
 /// lands at (about an 18-20% grey), and mid-tone contrast in output density
 /// per log10 exposure. Softer than a print (paper runs at about 1.5-1.7).
-const LAB_SCAN_DMAX: f64 = 2.4;
+pub(crate) const LAB_SCAN_DMAX: f64 = 2.4;
 const LAB_SCAN_GREY: f64 = 0.70;
 const LAB_SCAN_GAMMA: f64 = 1.15;
 
@@ -874,7 +874,8 @@ impl Core {
         }
         let core = Arc::new(Self::build(process, ds, print, log_h_ref, push)?);
         let mut cache = CACHE.lock().expect("cache");
-        if cache.len() >= 6 {
+        // Room for every built-in film plus a few push/pull variants.
+        if cache.len() >= 32 {
             cache.remove(0);
         }
         cache.push((key, core.clone()));

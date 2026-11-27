@@ -56,6 +56,8 @@ struct Settings {
     export: ExportOptions,
     /// Custom export folder; None = "<image folder>\exports".
     export_dir: Option<PathBuf>,
+    /// Render previews on the CPU even when there is a GPU.
+    cpu_previews: bool,
 }
 
 impl Settings {
@@ -135,12 +137,16 @@ struct PreviewJob {
     /// The edit with another film, when comparing looks.
     other: Option<Edit>,
     mode: Mode,
+    /// Fit only: render the neutral "before" too (the UI doesn't have the
+    /// current one).
+    need_before: bool,
 }
 
 enum PreviewOut {
     Fit {
         after: egui::ColorImage,
-        before: egui::ColorImage,
+        /// `None` when unchanged since the last one sent for this file.
+        before: Option<egui::ColorImage>,
         other: Option<egui::ColorImage>,
         thumb: egui::ColorImage,
         full_size: [usize; 2],
@@ -162,6 +168,9 @@ struct Tune {
     /// Kodak-data defaults for double-click reset (built-in presets only).
     reference: Option<FilmPreset>,
 }
+
+/// Which renderer the preview worker uses, for the About box.
+type PreviewRenderer = Arc<Mutex<String>>;
 
 struct PreviewResult {
     path: PathBuf,
@@ -218,18 +227,28 @@ struct FitCache {
     orientation: Orientation,
     full_size: [usize; 2],
     camera_warning: Option<String>,
+    /// `cam` uploaded to the GPU, when previews render there.
+    gpu_image: Option<remjet_core::gpu::GpuImage>,
 }
 
 /// Renders previews on a background thread.
 ///
-/// * Fit: from a cached half-size, downscaled image (fast for slider moves).
+/// * Fit: from a cached half-size, downscaled image (fast for slider moves),
+///   on the GPU when there is one (falling back to the CPU on any error).
 /// * Detail: from a cached full-resolution demosaic. First a quick patch of
 ///   the visible area, then — unless a newer request has arrived — the whole
 ///   frame, which the UI keeps as a texture so panning and zooming are free.
-fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<PreviewResult>) {
+fn spawn_preview_worker(ctx: egui::Context, use_gpu: bool, renderer: PreviewRenderer) -> (Sender<PreviewJob>, Receiver<PreviewResult>) {
     let (job_tx, job_rx) = channel::<PreviewJob>();
     let (res_tx, res_rx) = channel::<PreviewResult>();
     thread::spawn(move || {
+        let set_renderer = |name: String| *renderer.lock().expect("not poisoned") = name;
+        let mut gpu = if use_gpu { remjet_core::gpu::Gpu::new() } else { None };
+        set_renderer(match &gpu {
+            Some(g) => format!("GPU: {}", g.name),
+            None if use_gpu => "CPU (no usable GPU found)".into(),
+            None => "CPU (GPU previews turned off)".into(),
+        });
         let mut fit: Option<FitCache> = None;
         let mut full: Option<(PathBuf, CameraImage, Orientation)> = None;
         // Last full renders delivered, so repeat requests cost nothing.
@@ -265,6 +284,14 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
                         let (w, h) = raw_image.crop_area.map_or((raw_image.width, raw_image.height), |r| (r.d.w, r.d.h));
                         let full_size = if swaps_axes(raw_image.orientation) { [h, w] } else { [w, h] };
                         let (small, f) = cam.downscale_to(PREVIEW_EDGE);
+                        fit = None; // free the previous image (and its GPU copy) first
+                        let gpu_image = gpu.as_ref().and_then(|g| match g.upload(&small) {
+                            Ok(img) => Some(img),
+                            Err(e) => {
+                                eprintln!("GPU upload failed, rendering on the CPU: {e:#}");
+                                None
+                            }
+                        });
                         fit = Some(FitCache {
                             path: job.path.clone(),
                             cam: small,
@@ -272,24 +299,48 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
                             orientation: raw_image.orientation,
                             full_size,
                             camera_warning: raw::info(&raw_image).camera_warning(),
+                            gpu_image,
                         });
                     }
-                    let FitCache { cam, scale, orientation: o, full_size, camera_warning: warning, .. } = fit.as_ref().expect("filled above");
-                    let after = output::apply_orientation(edit::render_with(cam, &job.edit, job.preset.as_ref(), *scale, seed)?, *o);
-                    let before = output::apply_orientation(edit::render(cam, &neutral, *scale, seed)?, *o);
+                    let FitCache { cam, scale, orientation: o, gpu_image, .. } =
+                        fit.as_ref().expect("filled above");
+                    let gpu_failed = std::cell::Cell::new(false);
+                    let render = |e: &Edit, preset: Option<&FilmPreset>| -> anyhow::Result<RgbImage> {
+                        if let (Some(g), Some(img), false) = (&gpu, gpu_image, gpu_failed.get()) {
+                            match g.render(img, e, preset, *scale, seed) {
+                                Ok(out) => return Ok(out),
+                                Err(err) => {
+                                    eprintln!("GPU preview failed, switching to the CPU: {err:#}");
+                                    gpu_failed.set(true);
+                                }
+                            }
+                        }
+                        edit::render_with(cam, e, preset, *scale, seed)
+                    };
+                    let after = output::apply_orientation(render(&job.edit, job.preset.as_ref())?, *o);
+                    let before = match job.need_before {
+                        true => Some(to_color(&output::apply_orientation(render(&neutral, None)?, *o))),
+                        false => None,
+                    };
                     let other = match &job.other {
-                        Some(e) => Some(to_color(&output::apply_orientation(edit::render(cam, e, *scale, seed)?, *o))),
+                        Some(e) => Some(to_color(&output::apply_orientation(render(e, None)?, *o))),
                         None => None,
                     };
+                    if gpu_failed.get() {
+                        gpu = None;
+                        set_renderer("CPU (the GPU preview failed)".into());
+                    }
+                    let warning = fit.as_ref().and_then(|c| c.camera_warning.clone());
+                    let full_size = fit.as_ref().map_or([0, 0], |c| c.full_size);
                     let th = (THUMB_EDGE * after.height() as usize / after.width() as usize) as u32;
                     let thumb = image::imageops::thumbnail(&after, THUMB_EDGE as u32, th);
                     Ok(PreviewOut::Fit {
                         after: to_color(&after),
-                        before: to_color(&before),
+                        before,
                         other,
                         thumb: to_color(&thumb),
-                        full_size: *full_size,
-                        camera_warning: warning.clone(),
+                        full_size,
+                        camera_warning: warning,
                     })
                 })()),
                 Mode::Detail { region, sides } => {
@@ -368,6 +419,18 @@ fn spawn_preview_worker(ctx: egui::Context) -> (Sender<PreviewJob>, Receiver<Pre
         }
     });
     (job_tx, res_rx)
+}
+
+/// Build every film's datasheet model in the background, so the first pick
+/// of a film previews without the one-off set-up delay.
+fn prepare_films() {
+    thread::spawn(|| {
+        for (id, _) in presets::list() {
+            if let Ok(p) = presets::load(&id) {
+                let _ = remjet_core::film::FilmModel::new(&p, &remjet_core::film::FilmParams::default());
+            }
+        }
+    });
 }
 
 // --------------------------------------------------------------- thumbnails
@@ -575,6 +638,8 @@ struct FilmApp {
     preview_rx: Receiver<PreviewResult>,
     fit_after: Option<egui::TextureHandle>,
     fit_before: Option<egui::TextureHandle>,
+    /// File and neutral edit `fit_before` shows.
+    fit_before_key: Option<(PathBuf, Edit)>,
     /// Fit render of the compared look, and the edit it shows.
     fit_other: Option<(egui::TextureHandle, Edit)>,
     fit_path: Option<PathBuf>,
@@ -610,6 +675,8 @@ struct FilmApp {
     batch: Option<Batch>,
     status: String,
     show_about: bool,
+    /// Which renderer previews use (shown in About).
+    renderer: PreviewRenderer,
     /// Per-image undo/redo history for this session.
     history: HashMap<PathBuf, History>,
     /// Short confirmation shown over the preview: (message, shown at).
@@ -626,9 +693,11 @@ impl FilmApp {
             rs.device.on_uncaptured_error(Arc::new(|err| eprintln!("GPU error ignored: {err}")));
         }
         theme::install(&cc.egui_ctx);
-        let (preview_tx, preview_rx) = spawn_preview_worker(cc.egui_ctx.clone());
-        let (thumb_tx, thumb_rx) = channel();
         let settings = Settings::load();
+        let renderer = PreviewRenderer::default();
+        let (preview_tx, preview_rx) = spawn_preview_worker(cc.egui_ctx.clone(), !settings.cpu_previews, renderer.clone());
+        prepare_films();
+        let (thumb_tx, thumb_rx) = channel();
         let mut app = Self {
             folder: None,
             files: Vec::new(),
@@ -647,6 +716,7 @@ impl FilmApp {
             preview_rx,
             fit_after: None,
             fit_before: None,
+            fit_before_key: None,
             fit_other: None,
             fit_path: None,
             zoom: None,
@@ -669,6 +739,7 @@ impl FilmApp {
             camera_warnings: HashMap::new(),
             batch: None,
             show_about: false,
+            renderer,
             history: HashMap::new(),
             toast: None,
             status: "Open a folder of M9 DNGs to begin.".into(),
@@ -942,7 +1013,9 @@ impl FilmApp {
             ModeKey::Fit => Mode::Fit,
             ModeKey::Detail { sides } => Mode::Detail { region: self.visible, sides },
         };
-        let _ = self.preview_tx.send(PreviewJob { path, edit: self.edit.clone(), preset, other, mode });
+        let before_key = (path.clone(), neutral_of(&self.edit));
+        let need_before = self.fit_before.is_none() || self.fit_before_key.as_ref() != Some(&before_key);
+        let _ = self.preview_tx.send(PreviewJob { path, edit: self.edit.clone(), preset, other, mode, need_before });
     }
 
     /// The render key the screen should currently show.
@@ -969,7 +1042,10 @@ impl FilmApp {
                     self.set_camera_warning(&res.path, camera_warning);
                     self.thumbs.insert(res.path.clone(), ctx.load_texture(thumb_name(&res.path), thumb, lin));
                     self.fit_after = Some(ctx.load_texture("after", after, lin));
-                    self.fit_before = Some(ctx.load_texture("before", before, lin));
+                    if let Some(before) = before {
+                        self.fit_before = Some(ctx.load_texture("before", before, lin));
+                        self.fit_before_key = Some((res.path.clone(), neutral_of(&res.key.0)));
+                    }
                     if let (Some(img), Some(e)) = (other, res.other.clone()) {
                         self.fit_other = Some((ctx.load_texture("other", img, lin), e));
                     }
@@ -1162,6 +1238,15 @@ impl FilmApp {
             ui.label(egui::RichText::new("Alpha software: expect rough edges. Your DNGs are never modified, and nothing is written into your photo folders: edits are kept in Remjet's own data folder.").small());
             ui.add_space(6.0);
             ui.hyperlink_to("Project page, issues and source", REPO_URL);
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(format!("Previews: {}", self.renderer.lock().expect("not poisoned"))).small());
+            if ui
+                .checkbox(&mut self.settings.cpu_previews, "Render previews on the CPU")
+                .on_hover_text("Previews render on the graphics card when there is one, which makes sliders update instantly. Exports always render on the CPU. Turn this on if previews look wrong; it takes effect when Remjet restarts.")
+                .changed()
+            {
+                self.settings.save();
+            }
             ui.add_space(6.0);
             ui.label(egui::RichText::new("Licensed under the GNU GPL v3 or later. Raw decoding by rawler (LGPL-2.1).").small());
             ui.label(
@@ -2234,6 +2319,11 @@ fn camera_banner(ui: &mut egui::Ui, rect: egui::Rect, warning: &str) {
 
 fn to_color(img: &RgbImage) -> egui::ColorImage {
     egui::ColorImage::from_rgb([img.width() as usize, img.height() as usize], img.as_raw())
+}
+
+/// The neutral ("before") version of an edit: the same, without film.
+fn neutral_of(e: &Edit) -> Edit {
+    Edit { preset: None, ..e.clone() }
 }
 
 fn file_name(p: &Path) -> String {

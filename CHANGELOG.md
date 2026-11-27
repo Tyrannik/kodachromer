@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Previews update instantly.** Slider and film changes now render on the graphics card, so the
+  preview follows a slider as you drag it. The GPU runs the same steps as before (film curves,
+  grain, halation, sharpness, scanner or print), and matches the CPU render to within one level in
+  255 on every film; exports still render on the CPU, so they are exactly as before. Without a
+  usable graphics card, or if a GPU render ever fails, previews fall back to the CPU by themselves.
+  About shows which one is in use, and has a switch to force the CPU.
+- Picking a film for the first time no longer pauses while its datasheet model is built: every
+  film is prepared in the background when Remjet starts.
+- CPU rendering (exports, and previews without a GPU) is 20–35% faster, with identical output.
+
 ## 0.1.0-alpha.8
 
 - **Five new films from Kodak datasheets**, each digitised from its own publication's vector plots

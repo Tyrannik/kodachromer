@@ -8,6 +8,8 @@ pub mod develop;
 pub mod edit;
 pub mod exif;
 pub mod film;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod icc;
 pub mod output;
 pub mod paths;
