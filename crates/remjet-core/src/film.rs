@@ -135,14 +135,33 @@ pub struct Grain {
     pub amount: f64,
 }
 
-/// Halation: light that passes through the emulsion, reflects off the film
-/// base and re-exposes the bottom (red-sensitive) layer, giving a warm glow
-/// around strong highlights. Its strength is set per image.
+/// Halation: light that passes through the emulsion, reflects off the back
+/// of the film base and re-exposes the bottom (red-sensitive) layer, giving a
+/// warm glow around strong highlights.
+///
+/// How far the glow reaches is set by the base's thickness: light scattered
+/// in the emulsion at beyond the critical angle (about 42° for n = 1.5) is
+/// totally reflected at the base's back surface and lands back about
+/// 2 t tan 42° = 1.8 t away, so the glow is a Gaussian of sigma ≈ 1.45 t
+/// (mean radius 1.25 sigma). How strong it is depends on the film's
+/// anti-halation protection: a backing or undercoat that absorbs most of
+/// that light. Every Kodak still film has one, so their glow is faint;
+/// motion-picture film with its rem-jet backing removed shows it at full
+/// strength (1.0).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Halation {
+    /// The film's own halation strength, 0 .. 1 (1 = no anti-halation
+    /// protection). Used unless the image sets its own.
+    pub strength: f64,
+    /// What protects the film from halation, as shown in the app.
+    pub backing: Option<String>,
+    /// Film base thickness in micrometres (from the datasheet); sets the
+    /// glow's spread. Without it, `radius_px` is used.
+    pub base_um: Option<f64>,
     /// Spread of the glow (Gaussian sigma) in pixels at full M9 resolution
-    /// (6.9 µm pixels); other sensors get the same spread in micrometres.
+    /// (6.9 µm pixels), when `base_um` isn't given; other sensors get the
+    /// same spread in micrometres.
     pub radius_px: f64,
     /// Highlights brighter than this many stops over mid-grey produce glow.
     pub threshold_stops: f64,
@@ -150,9 +169,22 @@ pub struct Halation {
     pub tint: [f64; 3],
 }
 
+impl Halation {
+    /// Glow spread (Gaussian sigma) in M9 pixels.
+    pub fn sigma_m9_px(&self) -> f64 {
+        match self.base_um {
+            Some(t) if t > 0.0 => HALATION_SIGMA_PER_BASE * t / M9_PIXEL_UM,
+            _ => self.radius_px,
+        }
+    }
+}
+
+/// Halation glow sigma per micrometre of base thickness (see [`Halation`]).
+const HALATION_SIGMA_PER_BASE: f64 = 1.45;
+
 impl Default for Halation {
     fn default() -> Self {
-        Self { radius_px: 40.0, threshold_stops: 1.75, tint: [1.0, 0.22, 0.04] }
+        Self { strength: 0.0, backing: None, base_um: None, radius_px: 40.0, threshold_stops: 1.75, tint: [1.0, 0.22, 0.04] }
     }
 }
 
@@ -323,8 +355,9 @@ pub struct FilmParams {
     pub sensor_white: Option<f64>,
     /// Highlight shoulder, -1 (hold back / recover) .. +1 (open up).
     pub highlights: f64,
-    /// Halation strength, 0 (off) .. 1 (strong).
-    pub halation: f64,
+    /// Halation strength, 0 (off) .. 1 (film with no anti-halation
+    /// protection). `None` uses the preset's own.
+    pub halation: Option<f64>,
     /// Push (+) or pull (-) processing in stops, from the preset's
     /// `[[datasheet.development]]` list. 0 = normal.
     pub push: i32,
@@ -348,7 +381,7 @@ impl Default for FilmParams {
             sensor_pixel_um: M9_PIXEL_UM,
             sensor_white: Some(1.0),
             highlights: 0.0,
-            halation: 0.0,
+            halation: None,
             push: 0,
             output: OutputMode::Scan,
             scanner_colour: true,
@@ -545,13 +578,23 @@ impl FilmModel {
         let ev = params.exposure_ev * 2f64.log10();
         let mut output = params.output;
         let mut spread = None;
+        let mut push_grain = 1.0;
         let (engine, to_layers, grey_log_e, log_offset) = if let Some(process) = p.process {
             let ds = p.datasheet.as_ref().context("a spectral preset needs [datasheet]")?;
             let log_h_ref = p.exposure.log_h_ref.context("a spectral preset needs exposure.log_h_ref")?;
             let core = spectral::Core::get(process, ds, p.print.as_ref(), log_h_ref, params.push)?;
             // A pushed film is rated faster: the grey card is underexposed by
             // that many stops (and developed longer to make up for it).
+            let normal_log_h_ref = log_h_ref;
             let log_h_ref = log_h_ref - params.push as f64 * 2f64.log10();
+            if params.push != 0 {
+                // Longer development raises grain with contrast: density
+                // granularity grows about in step with the curve's gradient
+                // (Kodak: "push processing increases graininess"). Compare the
+                // two developments' contrast.
+                let normal = spectral::Core::get(process, ds, p.print.as_ref(), normal_log_h_ref, 0)?;
+                push_grain = (develop_contrast(&core) / develop_contrast(&normal).max(1e-6)).clamp(0.5, 3.0);
+            }
             let develop = [0, 1, 2].map(|ch| Lut::from_fn(LOG_E_MIN, LOG_E_MAX, |x| core.develop.eval(ch, x)));
             // A negative is lab-scanned (the default) or printed; either is
             // looked at, not projected. A slide has no print.
@@ -673,9 +716,18 @@ impl FilmModel {
             * (M9_PIXEL_UM.max(clump_um) / pixel_um.max(clump_um))
             * p.grain.amount
             * params.grain;
+        // Downscaled output (the fit-to-window preview, a small export): one
+        // output pixel averages f x f full-resolution pixels. That box acts
+        // like a further Gaussian of sigma f / (2 sqrt(pi)) (same noise
+        // reduction), so the downscaled grain is the full-resolution field
+        // blurred by sqrt(b^2 + s^2): its std falls by b / sqrt(b^2 + s^2)
+        // and, in output pixels, its clump size is sqrt(b^2 + s^2) / f.
+        // Generating that field directly makes the preview's grain match a
+        // full-resolution render scaled down, at any zoom.
         let f = params.pixel_scale.max(0.1);
-        let corr_len = (4.0 * std::f64::consts::PI * full_blur * full_blur).max(1.0).sqrt();
-        let grain_sigma = if f <= 1.0 { sigma_full } else { sigma_full * (corr_len / f).min(1.0) };
+        let box_sigma = if f > 1.0 { f / (2.0 * std::f64::consts::PI.sqrt()) } else { 0.0 };
+        let seen_blur = (full_blur * full_blur + box_sigma * box_sigma).sqrt();
+        let grain_sigma = sigma_full * push_grain * if f > 1.0 { full_blur.max(0.28) / seen_blur.max(0.28) } else { 1.0 };
 
         Ok(Self {
             to_layers: to_layers.map(|r| r.map(|v| v as f32)),
@@ -698,8 +750,8 @@ impl FilmModel {
             scan_wb: p.scan.white_balance.map(|v| v as f32),
             scan_matrix: scan_matrix.map(|m| m.map(|r| r.map(|v| v as f32))),
             grain_sigma: grain_sigma as f32,
-            hal_gain: (params.halation.clamp(0.0, 2.0) * HALATION_GAIN) as f32,
-            hal_sigma: (p.halation.radius_px.max(0.5) * k / f) as f32,
+            hal_gain: (params.halation.unwrap_or(p.halation.strength).clamp(0.0, 2.0) * HALATION_GAIN) as f32,
+            hal_sigma: (p.halation.sigma_m9_px().max(0.5) * k / f) as f32,
             hal_threshold: (10f64.powf(grey_log_e - log_offset) * 2f64.powf(p.halation.threshold_stops)) as f32,
             hal_tint: p.halation.tint.map(|v| v as f32),
             output,
@@ -707,7 +759,7 @@ impl FilmModel {
             proj_wb: p.projection.white_balance.map(|v| v as f32),
             proj_falloff: p.projection.falloff_stops.max(0.0) as f32,
             grain_corr: p.grain.correlation.clamp(0.0, 1.0) as f32,
-            grain_blur: (full_blur / f) as f32,
+            grain_blur: (seen_blur / f) as f32,
         })
     }
 
@@ -926,6 +978,37 @@ fn smooth_blur(plane: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
 /// Halation exposure gain at strength 1.0.
 const HALATION_GAIN: f64 = 0.8;
 
+/// A development's contrast: the mean gradient of its green (or silver)
+/// curve between 0.3 and 1.3 above its minimum density (as Kodak's contrast
+/// index does), ignoring its sign (slides fall, negatives rise). Measured at
+/// fixed densities, so a film merely rated faster gets the same value.
+fn develop_contrast(core: &spectral::Core) -> f64 {
+    let t = &core.develop;
+    let d: Vec<f64> = t.y.iter().map(|v| v[1]).collect();
+    let base = d.iter().cloned().fold(f64::MAX, f64::min);
+    let top = d.iter().cloned().fold(f64::MIN, f64::max);
+    let span = (top - base).min(1.3);
+    // log exposure where the curve first reaches base + level, walking from
+    // its low-density end.
+    let rising = d[d.len() - 1] > d[0];
+    let at = |level: f64| -> f64 {
+        let n = d.len();
+        for k in 1..n {
+            let (i0, i1) = if rising { (k - 1, k) } else { (n - k, n - k - 1) };
+            let (a, b) = (d[i0] - base, d[i1] - base);
+            if a < level && b >= level {
+                let x0 = t.x0 + t.step * i0 as f64;
+                let x1 = t.x0 + t.step * i1 as f64;
+                return x0 + (x1 - x0) * (level - a) / (b - a).max(1e-12);
+            }
+        }
+        f64::NAN
+    };
+    let (lo, hi) = (0.3f64.min(span * 0.25), span);
+    let g = (hi - lo) / (at(hi) - at(lo)).abs();
+    if g.is_finite() { g } else { 1.0 }
+}
+
 /// The camera's pixel pitch, falling back to the M9 for nonsense values.
 fn sensor_pitch_um(params: &FilmParams) -> f64 {
     if params.sensor_pixel_um.is_finite() && params.sensor_pixel_um > 0.0 { params.sensor_pixel_um } else { M9_PIXEL_UM }
@@ -1105,6 +1188,81 @@ mod tests {
     }
 
     #[test]
+    fn downscaled_grain_matches_a_scaled_down_full_render() {
+        // The fit-to-window preview renders at 1/4 size: its grain should
+        // match a full-size render box-averaged 4x4, not look coarser.
+        let std_of = |pixels: &[[f32; 3]]| {
+            let g: Vec<f32> = pixels.iter().map(|p| p[1]).collect();
+            let mean = g.iter().sum::<f32>() / g.len() as f32;
+            (g.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / g.len() as f32).sqrt()
+        };
+        let flat = |n: usize| LinearImage { width: n, height: n, pixels: vec![[0.18; 3]; n * n], cct: 5000.0 };
+        for id in ["kodachrome64", "portra400", "trix400"] {
+            let p = FilmPreset::builtin(id).unwrap();
+            let full = FilmModel::new(&p, &FilmParams { halation: Some(0.0), ..Default::default() }).unwrap().apply(&flat(1024), 3);
+            let n = 256;
+            let binned: Vec<[f32; 3]> = (0..n * n)
+                .map(|i| {
+                    let (x, y) = (i % n * 4, i / n * 4);
+                    let mut acc = [0f32; 3];
+                    for dy in 0..4 {
+                        for dx in 0..4 {
+                            let q = full.pixels[(y + dy) * 1024 + x + dx];
+                            acc = [acc[0] + q[0], acc[1] + q[1], acc[2] + q[2]];
+                        }
+                    }
+                    acc.map(|v| v / 16.0)
+                })
+                .collect();
+            let small = FilmModel::new(&p, &FilmParams { halation: Some(0.0), pixel_scale: 4.0, ..Default::default() })
+                .unwrap()
+                .apply(&flat(n), 3);
+            let (a, b) = (std_of(&binned), std_of(&small.pixels));
+            assert!((b / a - 1.0).abs() < 0.15, "{id}: scaled-down full render grain {a}, preview grain {b}");
+        }
+    }
+
+    #[test]
+    fn push_processing_raises_grain_and_pull_lowers_it() {
+        let p = FilmPreset::builtin("trix400").unwrap();
+        let sigma = |push| FilmModel::new(&p, &FilmParams { push, ..Default::default() }).unwrap().grain_sigma;
+        assert!(sigma(2) > sigma(0) * 1.05, "push 2 {} vs normal {}", sigma(2), sigma(0));
+        assert!(sigma(-1) < sigma(0), "pull 1 {} vs normal {}", sigma(-1), sigma(0));
+    }
+
+    #[test]
+    #[ignore = "prints the push grain factors for every film"]
+    fn print_push_grain() {
+        for (id, _) in crate::presets::BUILTINS {
+            let p = FilmPreset::builtin(id).unwrap();
+            let s0 = FilmModel::new(&p, &FilmParams::default()).unwrap().grain_sigma;
+            for (push, label) in p.developments() {
+                let s = FilmModel::new(&p, &FilmParams { push, ..Default::default() }).unwrap().grain_sigma;
+                println!("{id} {push:+} ({label}): grain x{:.2}", s / s0);
+            }
+        }
+    }
+
+    #[test]
+    fn halation_follows_each_films_backing_unless_set() {
+        for (id, _) in crate::presets::BUILTINS {
+            let p = FilmPreset::builtin(id).unwrap();
+            assert!(p.halation.strength > 0.0 && p.halation.strength < 0.3, "{id}: faint glow, as with any anti-halation protection");
+            assert!(p.halation.base_um.is_some() && p.halation.backing.is_some(), "{id}: base and backing given");
+            let own = FilmModel::new(&p, &FilmParams::default()).unwrap();
+            assert!((own.hal_gain as f64 - p.halation.strength * HALATION_GAIN).abs() < 1e-6);
+            let off = FilmModel::new(&p, &FilmParams { halation: Some(0.0), ..Default::default() }).unwrap();
+            assert_eq!(off.hal_gain, 0.0);
+        }
+        // Kodachrome's rem-jet backing protects better than an undercoat.
+        let k64 = FilmPreset::builtin("kodachrome64").unwrap();
+        let portra = FilmPreset::builtin("portra400").unwrap();
+        assert!(k64.halation.strength < portra.halation.strength);
+        // Spread follows base thickness: 1.45 x 100 µm on Portra's ESTAR base.
+        assert!((portra.halation.sigma_m9_px() * M9_PIXEL_UM - 145.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn grain_looks_the_same_size_on_a_finer_sensor() {
         // Render a flat grey on the M9 and on a sensor with half the pitch,
         // then compare grain over the same physical area: the fine render
@@ -1116,8 +1274,8 @@ mod tests {
             (g.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / g.len() as f32).sqrt()
         };
         let flat = |n: usize| LinearImage { width: n, height: n, pixels: vec![[0.18; 3]; n * n], cct: 5000.0 };
-        let m9 = FilmModel::new(&p, &FilmParams { halation: 0.0, ..Default::default() }).unwrap().apply(&flat(256), 7);
-        let fine = FilmModel::new(&p, &FilmParams { halation: 0.0, sensor_pixel_um: M9_PIXEL_UM / 2.0, ..Default::default() })
+        let m9 = FilmModel::new(&p, &FilmParams { halation: Some(0.0), ..Default::default() }).unwrap().apply(&flat(256), 7);
+        let fine = FilmModel::new(&p, &FilmParams { halation: Some(0.0), sensor_pixel_um: M9_PIXEL_UM / 2.0, ..Default::default() })
             .unwrap()
             .apply(&flat(512), 7);
         let binned: Vec<[f32; 3]> = (0..256 * 256)
@@ -1272,7 +1430,7 @@ mod tests {
             .collect();
         let img = LinearImage { width: w, height: h, pixels, cct: 5000.0 };
         let render = |hal: f64| {
-            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, halation: hal, ..Default::default() }).unwrap();
+            let m = FilmModel::new(&p, &FilmParams { grain: 0.0, halation: Some(hal), ..Default::default() }).unwrap();
             m.apply(&img, 0)
         };
         let (off, on) = (render(0.0), render(1.0));

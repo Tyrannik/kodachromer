@@ -33,10 +33,15 @@ pub fn packet(edit: &Edit, film_name: Option<&str>, description: &str) -> String
         ("remjet:Highlights", num(edit.highlights)),
         ("remjet:FitHighlights", edit.fit_highlights.to_string()),
         ("remjet:ScannerColour", edit.scanner_colour.to_string()),
-        ("remjet:Grain", num(edit.grain)),
+        ("remjet:Grain", if edit.grain_on { num(edit.grain) } else { "0".into() }),
         ("remjet:GrainSize", num(edit.grain_size)),
         ("remjet:Sharpen", num(edit.sharpen)),
-        ("remjet:Halation", num(edit.halation)),
+        // "film" = the film's own strength, set by its anti-halation backing.
+        ("remjet:Halation", match (edit.halation_on, edit.halation) {
+            (false, _) => "0".into(),
+            (true, None) => "film".into(),
+            (true, Some(v)) => num(v),
+        }),
         ("remjet:EditVersion", edit.version.to_string()),
     ];
     let mut s = String::new();

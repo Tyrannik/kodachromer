@@ -543,9 +543,9 @@ fn describe_change(a: &Edit, b: &Edit) -> String {
     check(a.highlights != b.highlights, "highlights");
     check(a.fit_highlights != b.fit_highlights, "highlight fit");
     check(a.scanner_colour != b.scanner_colour, "scanner colour");
-    check(a.halation != b.halation, "halation");
+    check(a.halation != b.halation || a.halation_on != b.halation_on, "halation");
     check(a.sharpen != b.sharpen, "sharpen");
-    check(a.grain != b.grain, "grain");
+    check(a.grain != b.grain || a.grain_on != b.grain_on, "grain");
     check(a.grain_size != b.grain_size, "grain size");
     match names.len() {
         0 => "no change".into(),
@@ -846,7 +846,7 @@ impl FilmApp {
     fn paste_settings(&mut self, ctx: &egui::Context, from_text: Option<&str>) {
         // Prefer settings pasted from the system clipboard (e.g. copied in an
         // earlier session); fall back to the in-app clipboard.
-        let parsed = from_text.and_then(|t| serde_json::from_str::<ClipboardSettings>(t.trim()).ok()).map(|c| c.remjet_settings);
+        let parsed = from_text.and_then(|t| serde_json::from_str::<ClipboardSettings>(t.trim()).ok()).map(|c| c.remjet_settings.migrated());
         let Some(clip) = parsed.or_else(|| self.clipboard.clone()) else {
             self.show_toast("Nothing to paste — copy an image's settings first (Ctrl+C)".into());
             return;
@@ -1013,14 +1013,18 @@ impl FilmApp {
                 mipmap_mode: Some(egui::TextureFilter::Linear),
                 ..lin
             };
+            // Fit previews: mipmapped too, so a window smaller than the
+            // render averages the grain (as a smaller export would) instead
+            // of sampling every other pixel, which looks coarser and harsher.
+            let fit_opts = egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..lin };
             match res.out {
                 Ok(PreviewOut::Fit { after, before, other, thumb, full_size, camera_warning }) => {
                     self.set_camera_warning(&res.path, camera_warning);
                     self.thumbs.insert(res.path.clone(), ctx.load_texture(thumb_name(&res.path), thumb, lin));
-                    self.fit_after = Some(ctx.load_texture("after", after, lin));
-                    self.fit_before = Some(ctx.load_texture("before", before, lin));
+                    self.fit_after = Some(ctx.load_texture("after", after, fit_opts));
+                    self.fit_before = Some(ctx.load_texture("before", before, fit_opts));
                     if let (Some(img), Some(e)) = (other, res.other.clone()) {
-                        self.fit_other = Some((ctx.load_texture("other", img, lin), e));
+                        self.fit_other = Some((ctx.load_texture("other", img, fit_opts), e));
                     }
                     self.fit_path = Some(res.path.clone());
                     self.full_size = Some(full_size);
@@ -1303,7 +1307,7 @@ impl FilmApp {
         let loaded = self.edit.preset.as_deref().and_then(|id| presets::load(id).ok());
         let mono = loaded.as_ref().is_some_and(|p| p.is_monochrome());
         let developments = loaded.as_ref().map(|p| p.developments()).unwrap_or_default();
-        let print = loaded.filter(|p| p.is_negative()).and_then(|p| p.print);
+        let print = loaded.clone().filter(|p| p.is_negative()).and_then(|p| p.print);
         ui.add_enabled_ui(self.edit.preset.is_some(), |ui| {
             let negative = print.is_some() || mono;
             let paper = print.as_ref().map(|p| p.name.clone()).unwrap_or_default();
@@ -1386,10 +1390,42 @@ impl FilmApp {
                  Off: the raw readings, with flatter colour, most visibly in bright saturated colours such as yellows.",
             );
         });
-        slider(ui, film, &mut e.halation, 0.0..=1.0, 0.01, "Halation", d.halation, Some("The red-orange glow film shows around bright lights, from light that passes through the film, reflects off its back and exposes it again. 0 is off."));
         slider(ui, true, &mut e.sharpen, 0.0..=1.0, 0.01, "Sharpen", d.sharpen, Some("Detail sharpening like a film scanner's. It works on brightness only, so it doesn't add colour fringes."));
-        slider(ui, film, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain, None);
-        slider(ui, film, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size, Some("Size of the grain clumps, relative to the film's own. Grain is sized on the film, so it looks the same at any export size."));
+
+        // Grain: the film's own strength from its datasheet, on/off, then
+        // strength and clump size relative to it.
+        let grain_info = match &loaded {
+            Some(p) => format!(
+                "{}'s grain, scaled from Kodak's rms granularity for it (for colour negatives, which Kodak rates by Print Grain Index \
+                 instead, an estimate from that). Faster films are grainier, and a push raises grain with the extra contrast it develops. \
+                 Grain is sized on the film, so a fit-to-window view or a small export shows it as a scaled-down scan would: finer and \
+                 softer than at 100%.",
+                p.name
+            ),
+            None => "Film grain. Choose a film to use it.".to_string(),
+        };
+        toggle_row(ui, film, &mut e.grain_on, "Film grain", &grain_info);
+        slider(ui, film && e.grain_on, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain, Some("Grain strength relative to the film's own (1)."));
+        slider(ui, film && e.grain_on, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size, Some("Size of the grain clumps, relative to the film's own. Grain is sized on the film, so it looks the same at any export size."));
+
+        // Halation: each film's own strength, set by its anti-halation backing.
+        let own = loaded.as_ref().map_or(0.0, |p| p.halation.strength as f32);
+        let hal_info = match &loaded {
+            Some(p) => format!(
+                "The glow film shows around bright lights: light passes through the film, reflects off the back of its base and exposes it again, \
+                 mostly in the red-sensitive layer, so it glows red-orange (grey on black-and-white film). The base's thickness sets how far it spreads. \
+                 {}: {}, so its glow is faint (strength {:.2}). 1 is film with no protection at all, such as motion-picture film with its rem-jet backing removed.",
+                p.name,
+                p.halation.backing.as_deref().unwrap_or("anti-halation protection"),
+                own
+            ),
+            None => "Halation. Choose a film to use it.".to_string(),
+        };
+        toggle_row(ui, film, &mut e.halation_on, "Halation", &hal_info);
+        let mut strength = e.halation.unwrap_or(own);
+        slider(ui, film && e.halation_on, &mut strength, 0.0..=1.0, 0.01, "Strength", own, Some("Halation strength. It starts at the film's own; double-click to go back to it. 1 is film with no anti-halation protection."));
+        // Follow the film (so a film swap takes the new film's own) unless changed.
+        e.halation = if (strength - own).abs() < 1e-4 { None } else { Some(strength) };
         theme::hint(ui, "Double-click a slider to reset it.");
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -1467,11 +1503,19 @@ impl FilmApp {
         }
         if e.preset.is_some() {
             num(e.highlights, d.highlights, "highlights", true);
-            num(e.halation, d.halation, "halation", false);
+            if let Some(h) = e.halation {
+                num(h, -1.0, "halation", false);
+            }
             num(e.grain, d.grain, "grain", false);
             num(e.grain_size, d.grain_size, "grain size", false);
         }
         num(e.sharpen, d.sharpen, "sharpen", false);
+        if e.preset.is_some() && !e.halation_on {
+            parts.push("halation off".into());
+        }
+        if e.preset.is_some() && !e.grain_on {
+            parts.push("grain off".into());
+        }
         if e.preset.is_some() && !e.fit_highlights {
             parts.push("highlight fit off".into());
         }
@@ -2294,6 +2338,15 @@ fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<
         // Round so saved presets read cleanly (0.53, not 0.5299999713897705).
         *value = (v as f64 * 1000.0).round() / 1000.0;
     }
+}
+
+/// A checkbox in the slider column, with an (i) explanation.
+fn toggle_row(ui: &mut egui::Ui, enabled: bool, value: &mut bool, text: &str, info: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+        ui.add_enabled(enabled, egui::Checkbox::new(value, text));
+        theme::info(ui, info);
+    });
 }
 
 /// Labelled slider that resets to `default` on double-click.

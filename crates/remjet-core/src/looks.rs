@@ -99,6 +99,7 @@ pub fn load_in(dir: &Path, id: &str) -> Result<Look> {
     let path = file(dir, id);
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let mut look: Look = serde_json::from_str(&text).with_context(|| format!("in {}", path.display()))?;
+    look.settings = look.settings.migrated();
     if look.name.trim().is_empty() {
         look.name = id.to_string();
     }
