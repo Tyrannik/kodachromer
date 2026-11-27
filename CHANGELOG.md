@@ -18,6 +18,26 @@
     same image scaled down from 100%; it now matches within a few percent, and the preview is
     mipmapped so a smaller window averages grain instead of sampling it.
   - CLI: `render --halation <0-1>`.
+- **Saved looks.** Keep your favourite combination of film, output, push/pull and adjustments
+  (highlight fit, scanner colour, grain, halation, sharpening...) as a named look: type a name
+  under **Save look** and press Save. Pick it from the new **Look** menu at the top of the Film
+  section to apply it to the frame, or to every selected frame at once (Ctrl+Z undoes it per
+  frame). By default a look keeps each frame's own exposure, warmth and tint; tick **Include
+  exposure and white balance** to carry those too. Saving under an existing name updates that
+  look. Looks are also in the export panel's **Look** menu, applied to each frame's own edit, and
+  with **Film in file name** the files are named after the look (`L1002695_portra-pushed.jpg`).
+  The CLI gets `export --look "<name>"`. Looks live in `%APPDATA%\Remjet\looks` as small JSON
+  files, so they survive restarts and updates; settings added in later versions take their
+  defaults when an older look is opened.
+- **Exports record their film look.** Every exported JPG now says which film and settings made it:
+  a one-line caption in the description (`Remjet look: Portra 400, lab scan, pushed 1 stop,
+  exposure +0.50 EV`), which Windows, Lightroom and most photo viewers show, and every setting in
+  the file's XMP. The new **Record film look** checkbox in the export panel (on by default; CLI:
+  `--no-look`) turns it off. This works for single and batch exports alike.
+- **More camera metadata is kept:** GPS position (if the camera recorded one; the M9 doesn't),
+  exposure program, metering mode, flash, maximum aperture, time zone, sub-second time and lens
+  serial number, alongside the camera, lens, date and exposure already copied. **Keep location**
+  (CLI: `--no-gps`) leaves the GPS position out, e.g. for photos you share online.
 
 ## 0.1.0-alpha.8
 

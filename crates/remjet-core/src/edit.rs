@@ -353,16 +353,26 @@ pub struct ExportOptions {
     pub quality: u8,
     /// Resize so the long edge is at most this many pixels (None = full size).
     pub max_edge: Option<u32>,
-    /// Copy camera metadata (date, exposure, camera, lens) into the JPEG.
+    /// Copy camera metadata (date, exposure, camera, lens, GPS) into the JPEG.
     pub keep_exif: bool,
+    /// With `keep_exif`, also copy the GPS position if the camera recorded
+    /// one. Off leaves the place out, e.g. for photos shared online.
+    pub keep_location: bool,
+    /// Record the film look and its settings in the JPEG (EXIF
+    /// ImageDescription and XMP), whether or not camera metadata is kept.
+    pub record_look: bool,
     /// Add the film to the file name (`L1002695_portra400.jpg`), so one
     /// shoot can be exported in several looks into the same folder.
     pub film_in_name: bool,
+    /// With `film_in_name`, use this in the file name instead of the film
+    /// id (the saved look's id when exporting with a look). Not persisted.
+    #[serde(skip)]
+    pub name_tag: Option<String>,
 }
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        Self { quality: 92, max_edge: None, keep_exif: true, film_in_name: false }
+        Self { quality: 92, max_edge: None, keep_exif: true, keep_location: true, record_look: true, film_in_name: false, name_tag: None }
     }
 }
 
@@ -378,15 +388,99 @@ pub fn export_jpeg(path: &Path, edit: &Edit, out_dir: &Path, opts: &ExportOption
             img = image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3);
         }
     }
-    let exif = if opts.keep_exif { crate::exif::read(path).ok() } else { None };
+    let (exif, xmp) = export_metadata(path, edit, opts);
     let out = out_dir.join(export_name(path, edit, opts));
-    output::write_jpeg_with_exif(&img, &out, opts.quality.clamp(1, 100), exif.as_ref())?;
+    output::write_jpeg_with_meta(&img, &out, opts.quality.clamp(1, 100), exif.as_ref(), xmp.as_deref())?;
     Ok(out)
+}
+
+/// The EXIF and XMP an export of `path` carries under `opts`. A DNG whose
+/// metadata can't be read still gets the look recorded.
+pub fn export_metadata(path: &Path, edit: &Edit, opts: &ExportOptions) -> (Option<crate::exif::ExifInfo>, Option<String>) {
+    let mut exif = if opts.keep_exif { crate::exif::read(path).ok() } else { None };
+    if let Some(e) = exif.as_mut().filter(|_| !opts.keep_location) {
+        e.gps = None;
+    }
+    if !opts.record_look {
+        return (exif, None);
+    }
+    let preset = edit.preset.as_deref().and_then(|id| crate::presets::load(id).ok());
+    let description = describe_look(edit, preset.as_ref());
+    let xmp = crate::xmp::packet(edit, preset.as_ref().map(|p| p.name.as_str()), &description);
+    let mut exif = exif.unwrap_or_default();
+    exif.description = Some(description);
+    (Some(exif), Some(xmp))
+}
+
+/// One-line summary of the look, for the exported file's caption:
+/// `Remjet look: Portra 400, lab scan, pushed 1 stop, exposure +0.50 EV`.
+/// Lists the film, how it's viewed and development, then only the
+/// adjustments that differ from neutral; the XMP carries every setting.
+pub fn describe_look(edit: &Edit, preset: Option<&FilmPreset>) -> String {
+    let mut parts = Vec::new();
+    match preset {
+        None => parts.push("no film (neutral)".to_string()),
+        Some(p) => {
+            parts.push(p.name.clone());
+            let negative = p.is_negative() && !p.is_monochrome();
+            parts.push(match edit.output {
+                OutputMode::Print => match &p.print {
+                    Some(paper) => format!("print on {}", paper.name),
+                    None => "print".into(),
+                },
+                OutputMode::Projection => "projected".into(),
+                OutputMode::Scan if negative => "lab scan".into(),
+                OutputMode::Scan => "scan".into(),
+            });
+            let stops = |n: i32| if n.abs() == 1 { "stop" } else { "stops" };
+            match edit.push {
+                0 => {}
+                n if n > 0 => parts.push(format!("pushed {n} {}", stops(n))),
+                n => parts.push(format!("pulled {} {}", -n, stops(n))),
+            }
+        }
+    }
+    let set = |v: f32| v.abs() >= 0.005;
+    if set(edit.exposure_ev) {
+        parts.push(format!("exposure {:+.2} EV", edit.exposure_ev));
+    }
+    if set(edit.warmth) {
+        parts.push(format!("warmth {:+.2}", edit.warmth));
+    }
+    if set(edit.tint) {
+        parts.push(format!("tint {:+.2}", edit.tint));
+    }
+    if set(edit.highlights) {
+        parts.push(format!("highlights {:+.2}", edit.highlights));
+    }
+    if preset.is_some() {
+        if !edit.grain_on || !set(edit.grain) {
+            parts.push("no grain".into());
+        } else if set(edit.grain - 1.0) {
+            parts.push(format!("grain x{:.2}", edit.grain));
+        }
+        // The film's own halation is part of the film; only mention a change.
+        match (edit.halation_on, edit.halation) {
+            (false, _) => parts.push("no halation".into()),
+            (true, Some(v)) => parts.push(format!("halation {v:.2}")),
+            (true, None) => {}
+        }
+        if !edit.fit_highlights {
+            parts.push("highlight fit off".into());
+        }
+        if !edit.scanner_colour && edit.output == OutputMode::Scan && preset.is_some_and(|p| !p.is_monochrome()) {
+            parts.push("scanner colour off".into());
+        }
+    }
+    format!("Remjet look: {}", parts.join(", "))
 }
 
 /// File name of a DNG's exported JPEG.
 pub fn export_name(path: &Path, edit: &Edit, opts: &ExportOptions) -> String {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    if let Some(tag) = opts.name_tag.as_deref().filter(|_| opts.film_in_name) {
+        return format!("{stem}_{tag}.jpg");
+    }
     match (&edit.preset, opts.film_in_name) {
         (Some(id), true) => format!("{stem}_{id}.jpg"),
         (None, true) => format!("{stem}_neutral.jpg"),
@@ -419,6 +513,42 @@ pub fn with_film(edit: &Edit, preset: Option<&str>) -> Edit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn look_description_lists_film_output_and_changes() {
+        let portra = crate::presets::load("portra400").unwrap();
+        let e = Edit { preset: Some("portra400".into()), exposure_ev: 0.5, warmth: -0.2, push: 1, ..Default::default() };
+        assert_eq!(describe_look(&e, Some(&portra)), "Remjet look: Portra 400, lab scan, pushed 1 stop, exposure +0.50 EV, warmth -0.20");
+        let print = Edit { output: OutputMode::Print, grain: 0.0, push: -1, ..e.clone() };
+        let d = describe_look(&print, Some(&portra));
+        assert!(d.starts_with("Remjet look: Portra 400, print on Endura"), "{d}");
+        assert!(d.contains("pulled 1 stop") && d.contains("no grain"), "{d}");
+        let k = crate::presets::load("kodachrome64").unwrap();
+        let slide = Edit { output: OutputMode::Projection, grain: 0.5, ..Default::default() };
+        assert_eq!(describe_look(&slide, Some(&k)), "Remjet look: Kodachrome 64, projected, grain x0.50");
+        let glow = Edit { halation: Some(0.6), ..Default::default() };
+        assert_eq!(describe_look(&glow, Some(&k)), "Remjet look: Kodachrome 64, scan, halation 0.60");
+        let off = Edit { halation_on: false, ..Default::default() };
+        assert_eq!(describe_look(&off, Some(&k)), "Remjet look: Kodachrome 64, scan, no halation");
+        let neutral = Edit { preset: None, ..Default::default() };
+        assert_eq!(describe_look(&neutral, None), "Remjet look: no film (neutral)");
+    }
+
+    #[test]
+    fn export_metadata_follows_the_options() {
+        // A file that isn't a DNG: camera metadata can't be read, the look
+        // is still recorded.
+        let (root, _store, dng) = setup("meta", b"not a dng");
+        let e = Edit::default();
+        let (exif, xmp) = export_metadata(&dng, &e, &ExportOptions::default());
+        let exif = exif.unwrap();
+        assert_eq!(exif.make, None);
+        assert_eq!(exif.description.as_deref(), Some("Remjet look: Kodachrome 64, scan"));
+        assert!(xmp.unwrap().contains("remjet:Film=\"kodachrome64\""));
+        let off = ExportOptions { record_look: false, keep_exif: false, ..Default::default() };
+        assert_eq!(export_metadata(&dng, &e, &off), (None, None));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// A temp folder with a fake "DNG" of given content, and a store folder.
     fn setup(tag: &str, content: &[u8]) -> (PathBuf, PathBuf, PathBuf) {
@@ -491,6 +621,8 @@ mod tests {
         assert_eq!(export_name(dng, &portra, &plain), "L1002695.jpg");
         assert_eq!(export_name(dng, &portra, &tagged), "L1002695_portra400.jpg");
         assert_eq!(export_name(dng, &Edit { preset: None, ..Default::default() }, &tagged), "L1002695_neutral.jpg");
+        let look = ExportOptions { name_tag: Some("portra-pushed".into()), ..tagged };
+        assert_eq!(export_name(dng, &portra, &look), "L1002695_portra-pushed.jpg");
     }
 
     #[test]

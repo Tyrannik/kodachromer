@@ -37,9 +37,11 @@ How Remjet is put together, for anyone reading or extending the code.
      the readings are in the layers' wide primaries, so they are mapped back to sRGB
      (inverse of the layer-sensitivity fit for negatives, Rec.2020 → sRGB for Kodachrome), with
      out-of-gamut colours pulled toward the grey of the same luminance.
-5. **Output** (`output.rs`, `exif.rs`, `icc.rs`): sRGB encode, orientation, JPEG (4:4:4, optimised
-   tables) with a minimal EXIF block built from the DNG's metadata and an embedded sRGB ICC profile
-   (generated in code, ICC v2.1).
+5. **Output** (`output.rs`, `exif.rs`, `xmp.rs`, `icc.rs`): sRGB encode, orientation, JPEG (4:4:4,
+   optimised tables) with a minimal EXIF block built from the DNG's metadata (IFD0, Exif and GPS
+   IFDs; the look's summary as ImageDescription), an XMP packet with the look's caption
+   (`dc:description`) and every edit setting under the `remjet:` namespace, and an embedded sRGB
+   ICC profile (generated in code, ICC v2.1).
 
 ## The app
 
