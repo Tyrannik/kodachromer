@@ -79,6 +79,9 @@ pub struct Gpu {
     layout: wgpu::BindGroupLayout,
     pipelines: std::collections::HashMap<&'static str, wgpu::ComputePipeline>,
     max_binding: u64,
+    /// Last GPU error. wgpu's default is to panic on one; previews should
+    /// fall back to the CPU instead.
+    error: Arc<std::sync::Mutex<Option<String>>>,
     /// Adapter name, for the app's About / log.
     pub name: String,
 }
@@ -143,6 +146,13 @@ impl Gpu {
             ..Default::default()
         }))
         .context("creating GPU device")?;
+        let error = Arc::new(std::sync::Mutex::new(None));
+        let sink = error.clone();
+        device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| {
+            if let Ok(mut slot) = sink.lock() {
+                slot.get_or_insert_with(|| e.to_string());
+            }
+        }));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("remjet look"),
             source: wgpu::ShaderSource::Wgsl(include_str!("gpu.wgsl").into()),
@@ -194,14 +204,28 @@ impl Gpu {
                 (e, p)
             })
             .collect();
-        Ok(Self {
+        let gpu = Self {
             device,
             queue,
             layout,
             pipelines,
             max_binding: limits.max_storage_buffer_binding_size.min(limits.max_buffer_size),
+            error,
             name: format!("{} ({:?})", info.name, info.backend),
-        })
+        };
+        // Shader compilation errors (e.g. a driver's compiler rejecting
+        // something) surface here rather than at the first render.
+        let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        gpu.check().with_context(|| format!("setting up {}", gpu.name))?;
+        Ok(gpu)
+    }
+
+    /// Fail if the device has reported an error since the last check.
+    fn check(&self) -> Result<()> {
+        match self.error.lock().ok().and_then(|mut e| e.take()) {
+            Some(e) => bail!("GPU error: {e}"),
+            None => Ok(()),
+        }
     }
 
     /// Upload a camera image (once per image; render it as often as needed).
@@ -547,6 +571,7 @@ impl<'a> Job<'a> {
             let _ = tx.send(r);
         });
         self.gpu.device.poll(wgpu::PollType::wait_indefinitely()).context("waiting for the GPU")?;
+        self.gpu.check()?;
         rx.recv().context("GPU readback lost")?.context("reading back from the GPU")?;
         let data = slice.get_mapped_range().map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let mut rgb = Vec::with_capacity(w * h * 3);

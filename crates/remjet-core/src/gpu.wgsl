@@ -290,6 +290,18 @@ fn highlight_fit(x: f32) -> f32 {
     return clip + k * clip * clip + (x - clip) * pf(7u);
 }
 
+// Log exposure of one layer after flare, contrast and the highlight shoulder.
+fn layer_log_e(e: f32) -> f32 {
+    let grey = pf(2u);
+    let knee = pf(9u);
+    let l = log10_(max(e, 0.0) + pf(0u)) + pf(1u);
+    var rel = max(l - grey, -3.0) * pf(3u);
+    if rel > knee {
+        rel = knee + highlight_fit(rel - knee) * pf(4u);
+    }
+    return grey + rel;
+}
+
 // Developed state (FilmModel::state_from_exposure + Engine::develop):
 // exposures offs.x -> state offs.y.
 // f[0] flare, f[1] log_offset, f[2] grey_log_e, f[3] contrast,
@@ -301,23 +313,11 @@ fn state(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups)
     let i = pixel_index(gid, nwg);
     if i >= P.dims.x * P.dims.y { return; }
     let e = load3(P.offs.x, i);
-    let grey = pf(2u);
-    let knee = pf(9u);
-    var le = vec3<f32>(0.0);
-    for (var c = 0u; c < 3u; c++) {
-        let l = log10_(max(e[c], 0.0) + pf(0u)) + pf(1u);
-        var rel = max(l - grey, -3.0) * pf(3u);
-        if rel > knee {
-            rel = knee + highlight_fit(rel - knee) * pf(4u);
-        }
-        le[c] = grey + rel;
-    }
+    let le = vec3<f32>(layer_log_e(e.x), layer_log_e(e.y), layer_log_e(e.z));
     let mean = (le.x + le.y + le.z) / 3.0;
     let ii = pf(8u);
-    var a = vec3<f32>(0.0);
-    for (var c = 0u; c < 3u; c++) {
-        a[c] = lut_eval(c, le[c] + ii * clamp(le[c] - mean, -1.0, 1.0));
-    }
+    let x = le + ii * clamp(le - vec3<f32>(mean), vec3<f32>(-1.0), vec3<f32>(1.0));
+    var a = vec3<f32>(lut_eval(0u, x.x), lut_eval(1u, x.y), lut_eval(2u, x.z));
     if P.ints.x == 1u {
         a = mulv(mat_at(10u), a);
     }
@@ -403,8 +403,11 @@ fn grain_add(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgro
         let base = vec3<f32>(sigma * sqrt(max(d.x, 0.05)), sigma * sqrt(max(d.y, 0.05)), sigma * sqrt(max(d.z, 0.05)));
         d = d + base * wt * n;
     } else {
+        // (Built per component: some shader compilers can't assign to a
+        // vector element chosen at run time.)
+        let add = sigma * sqrt(max(d, vec3<f32>(0.05))) * wt * n;
         let c = P.ints.x;
-        d[c] = d[c] + sigma * sqrt(max(d[c], 0.05)) * wt * n;
+        d = d + vec3<f32>(select(0.0, add.x, c == 0u), select(0.0, add.y, c == 1u), select(0.0, add.z, c == 2u));
     }
     store3(P.offs.x, i, d);
 }
@@ -425,26 +428,33 @@ fn table_eval(base: u32, n: u32, x0: f32, step: f32, ch: u32, x: f32) -> f32 {
 fn viewer(base: u32, a: vec3<f32>) -> vec3<f32> {
     let n = 41u;
     let top = f32(n - 1u);
-    var i0 = vec3<u32>(0u);
-    var f = vec3<f32>(0.0);
-    for (var c = 0u; c < 3u; c++) {
-        let t = clamp((a[c] - pf(30u)) * pf(31u), 0.0, top);
-        i0[c] = min(u32(t), n - 2u);
-        f[c] = t - f32(i0[c]);
-    }
+    let t = clamp((a - vec3<f32>(pf(30u))) * pf(31u), vec3<f32>(0.0), vec3<f32>(top));
+    let i0 = min(vec3<u32>(t), vec3<u32>(n - 2u));
+    let f = t - vec3<f32>(i0);
     var acc = vec3<f32>(0.0);
     for (var corner = 0u; corner < 8u; corner++) {
         let d = vec3<u32>((corner >> 2u) & 1u, (corner >> 1u) & 1u, corner & 1u);
-        var w = 1.0;
-        for (var c = 0u; c < 3u; c++) {
-            w *= select(1.0 - f[c], f[c], d[c] == 1u);
-        }
+        let w = select(1.0 - f.x, f.x, d.x == 1u) * select(1.0 - f.y, f.y, d.y == 1u) * select(1.0 - f.z, f.z, d.z == 1u);
         if w == 0.0 { continue; }
         let idx = base + 3u * (((i0.x + d.x) * n + i0.y + d.y) * n + i0.z + d.z);
         acc += w * vec3<f32>(lut[idx], lut[idx + 1u], lut[idx + 2u]);
     }
     let xyz = vec3<f32>(exp10(acc.x), exp10(acc.y), exp10(acc.z));
     return mulv(mat_at(32u), xyz);
+}
+
+// spectral::LabScan::rgb for one channel.
+fn lab_scan(c: u32, s: f32) -> f32 {
+    let p = pf(c) * (s - pf(3u + c));
+    let rel = (p - pf(6u + c)) / pf(9u + c);
+    let d = pf(14u) / (1.0 + exp(pf(12u) * (rel - pf(13u))));
+    return exp10(-d);
+}
+
+// Printer: paper dye amount for one channel of negative state.
+fn paper_dye(c: u32, s: f32) -> f32 {
+    let lh = pf(c) - pf(3u + c) * (s - pf(6u + c));
+    return table_eval(P.ints.z, P.ints.y, pf(15u), pf(16u), c, lh);
 }
 
 // Engine::finish for the spectral engine: state (offs.x) -> scanner-channel
@@ -460,18 +470,9 @@ fn finish(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups
     let s = load3(P.offs.x, i);
     var rgb = vec3<f32>(0.0);
     if P.ints.x == 1u {
-        for (var c = 0u; c < 3u; c++) {
-            let p = pf(c) * (s[c] - pf(3u + c));
-            let rel = (p - pf(6u + c)) / pf(9u + c);
-            let d = pf(14u) / (1.0 + exp(pf(12u) * (rel - pf(13u))));
-            rgb[c] = exp10(-d);
-        }
+        rgb = vec3<f32>(lab_scan(0u, s.x), lab_scan(1u, s.y), lab_scan(2u, s.z));
     } else if P.ints.x == 2u {
-        var paper = vec3<f32>(0.0);
-        for (var c = 0u; c < 3u; c++) {
-            let lh = pf(c) - pf(3u + c) * (s[c] - pf(6u + c));
-            paper[c] = table_eval(P.ints.z, P.ints.y, pf(15u), pf(16u), c, lh);
-        }
+        let paper = vec3<f32>(paper_dye(0u, s.x), paper_dye(1u, s.y), paper_dye(2u, s.z));
         rgb = viewer(P.ints.w, paper);
     } else {
         rgb = viewer(P.ints.w, s);
@@ -510,6 +511,27 @@ fn into_gamut(c: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(y + t * (c.x - y), y + t * (c.y - y), y + t * (c.z - y));
 }
 
+// FilmModel::project for one channel.
+fn project(c: u32, d: f32, light: f32) -> f32 {
+    let flare = pf(21u);
+    let t = exp10(-(d * pf(3u + c) + pf(c))) / pf(6u);
+    return clamp((t * light + flare) / (1.0 + flare) * pf(22u + c), 0.0, 1.0);
+}
+
+// FilmModel::scan, first half: balanced transmittance between black and white.
+fn scan_level(c: u32, d: f32) -> f32 {
+    let t = exp10(-(d * pf(3u + c) + pf(c)));
+    return (t - pf(7u)) / (pf(6u) - pf(7u));
+}
+
+// FilmModel::scan, second half: gamma and white balance.
+fn scan_out(c: u32, v: f32) -> f32 {
+    let x = clamp(v, 0.0, 1.0);
+    var g = 0.0;
+    if x > 0.0 { g = pow(x, pf(8u)); }
+    return clamp(g * pf(9u + c), 0.0, 1.0);
+}
+
 // FilmModel::scan / project + output::display_to_srgb8: densities (offs.x)
 // -> packed sRGB (offs.y).
 // f[0..3] balance offsets, f[3..6] scales, f[6] t_white, f[7] t_black,
@@ -529,26 +551,13 @@ fn film_out(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgrou
         let x = 2.0 * u - 1.0;
         let y = 2.0 * v - 1.0;
         let light = exp2(-pf(25u) * (x * x + y * y) * 0.5);
-        let flare = pf(21u);
-        for (var c = 0u; c < 3u; c++) {
-            let t = exp10(-(d[c] * pf(3u + c) + pf(c))) / pf(6u);
-            out[c] = clamp((t * light + flare) / (1.0 + flare) * pf(22u + c), 0.0, 1.0);
-        }
+        out = vec3<f32>(project(0u, d.x, light), project(1u, d.y, light), project(2u, d.z, light));
     } else {
-        var v = vec3<f32>(0.0);
-        for (var c = 0u; c < 3u; c++) {
-            let t = exp10(-(d[c] * pf(3u + c) + pf(c)));
-            v[c] = (t - pf(7u)) / (pf(6u) - pf(7u));
-        }
+        var v = vec3<f32>(scan_level(0u, d.x), scan_level(1u, d.y), scan_level(2u, d.z));
         if P.ints.x == 1u {
             v = into_gamut(mulv(mat_at(12u), v));
         }
-        for (var c = 0u; c < 3u; c++) {
-            let x = clamp(v[c], 0.0, 1.0);
-            var g = 0.0;
-            if x > 0.0 { g = pow(x, pf(8u)); }
-            out[c] = clamp(g * pf(9u + c), 0.0, 1.0);
-        }
+        out = vec3<f32>(scan_out(0u, v.x), scan_out(1u, v.y), scan_out(2u, v.z));
     }
     work[P.offs.y + i] = pack(out);
 }
