@@ -13,6 +13,15 @@
   The CLI gets `export --look "<name>"`. Looks live in `%APPDATA%\Remjet\looks` as small JSON
   files, so they survive restarts and updates; settings added in later versions take their
   defaults when an older look is opened.
+- **Exports record their film look.** Every exported JPG now says which film and settings made it:
+  a one-line caption in the description (`Remjet look: Portra 400, lab scan, pushed 1 stop,
+  exposure +0.50 EV`), which Windows, Lightroom and most photo viewers show, and every setting in
+  the file's XMP. The new **Record film look** checkbox in the export panel (on by default; CLI:
+  `--no-look`) turns it off. This works for single and batch exports alike.
+- **More camera metadata is kept:** GPS position (if the camera recorded one; the M9 doesn't),
+  exposure program, metering mode, flash, maximum aperture, time zone, sub-second time and lens
+  serial number, alongside the camera, lens, date and exposure already copied. **Keep location**
+  (CLI: `--no-gps`) leaves the GPS position out, e.g. for photos you share online.
 
 ## 0.1.0-alpha.8
 

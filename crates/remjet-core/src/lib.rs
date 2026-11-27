@@ -16,3 +16,4 @@ pub mod presets;
 pub mod raw;
 pub mod sensor;
 pub mod spectral;
+pub mod xmp;
