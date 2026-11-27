@@ -9,6 +9,7 @@ How Remjet is put together, for anyone reading or extending the code.
 | `crates/remjet-core` | Everything that touches pixels: DNG decoding, colour science, the film model, grain, halation, edits/sidecars, export, EXIF. No UI. |
 | `crates/remjet` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
 | `crates/remjet-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
+| `crates/remjet-android` | JNI bindings for the Android app in `android/` (preview, export, film list). See `android/README.md`. |
 | `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml`, `ektachrome-e100vs.toml`, `ektachrome-e200.toml`, `portra160.toml`, `portra400.toml`, `portra800.toml`, `ektar100.toml`, `gold200.toml`, `ultramax400.toml`, `trix400.toml`, `tmax100.toml` and `tmax400.toml` (spectral model; Tri-X and T-Max are `process = "monochrome"`). |
 | `assets/` | Icon, and the Barlow fonts the app embeds (`assets/fonts`, SIL OFL 1.1). |
 
@@ -37,9 +38,11 @@ How Remjet is put together, for anyone reading or extending the code.
      the readings are in the layers' wide primaries, so they are mapped back to sRGB
      (inverse of the layer-sensitivity fit for negatives, Rec.2020 → sRGB for Kodachrome), with
      out-of-gamut colours pulled toward the grey of the same luminance.
-5. **Output** (`output.rs`, `exif.rs`, `icc.rs`): sRGB encode, orientation, JPEG (4:4:4, optimised
-   tables) with a minimal EXIF block built from the DNG's metadata and an embedded sRGB ICC profile
-   (generated in code, ICC v2.1).
+5. **Output** (`output.rs`, `exif.rs`, `xmp.rs`, `icc.rs`): sRGB encode, orientation, JPEG (4:4:4,
+   optimised tables) with a minimal EXIF block built from the DNG's metadata (IFD0, Exif and GPS
+   IFDs; the look's summary as ImageDescription), an XMP packet with the look's caption
+   (`dc:description`) and every edit setting under the `remjet:` namespace, and an embedded sRGB
+   ICC profile (generated in code, ICC v2.1).
 
 ## The app
 
@@ -120,6 +123,18 @@ first used, and cached:
 Reference tables are in `cie.rs`: CIE 015:2018 colour-matching functions and daylight basis, and
 the ISO 5-3 Status A and M responses. The negatives' grain strengths (Kodak gives only Print Grain Index)
 and the print grey aim are not in the datasheets; both are marked as estimates in the presets.
+
+Grain and halation:
+- Grain strength comes from the datasheet's diffuse rms granularity (48 µm aperture), converted to
+  the camera's pixel size by Selwyn's law. A downscaled render (the fit preview, a small export)
+  generates the grain one output pixel would average: std scaled by b / sqrt(b² + s²) and clump size
+  sqrt(b² + s²), where b is the grain blur and s = f / (2 sqrt(pi)) is the box filter of the scale
+  factor f as a Gaussian. Pushed and pulled developments scale grain by their contrast (mean
+  gradient between 0.3 and 1.3 above Dmin) relative to normal development.
+- Halation: `[halation] strength` is each film's own (0..1, 1 = no anti-halation protection),
+  an estimate by type of protection (rem-jet backing, undercoat, dyed base), since Kodak publishes
+  no figure. The glow's sigma is 1.45 x the base thickness (`base_um`, from the datasheet where it
+  gives one): totally reflected light returns about 2 t tan 42° from where it entered.
 
 ## Film data sources
 

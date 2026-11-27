@@ -11,6 +11,46 @@
 - Picking a film for the first time no longer pauses while its datasheet model is built: every
   film is prepared in the background when Remjet starts.
 - CPU rendering (exports, and previews without a GPU) is 20–35% faster, with identical output.
+- **Grain and halation per film.** Both now have an on/off switch and a strength slider, each with an
+  (i) explaining where it comes from.
+  - **Halation is on by default at each film's own strength**, set by its anti-halation protection:
+    faint on every Kodak still film, least on Kodachrome (rem-jet backing), a little more on the
+    Ektachromes and colour negatives (undercoat) and the black-and-white films. Its spread now
+    follows each film's base thickness from the datasheet (0.10 mm ESTAR for Portra and Ektar,
+    0.13 mm acetate for the Ektachromes, 5.3 mil for Kodachrome), so it hugs lights more tightly than
+    before. Strength 1 is film with no protection at all, like motion-picture film with its rem-jet
+    removed. Images you set halation on keep their value; images with it at 0 have it switched off.
+    Kodak publishes no halation figure, so the strengths are estimates.
+  - **Pushed film is grainier, pulled film finer**, in step with the development's extra contrast
+    (Portra 400 push 2: 1.3x; Tri-X push 2: 1.16x; a film merely rated faster is unchanged).
+  - **The fit-to-window preview no longer overstates grain.** It showed about 1.4x the grain of the
+    same image scaled down from 100%; it now matches within a few percent, and the preview is
+    mipmapped so a smaller window averages grain instead of sampling it.
+  - CLI: `render --halation <0-1>`.
+- **Saved looks.** Keep your favourite combination of film, output, push/pull and adjustments
+  (highlight fit, scanner colour, grain, halation, sharpening...) as a named look: type a name
+  under **Save look** and press Save. Pick it from the new **Look** menu at the top of the Film
+  section to apply it to the frame, or to every selected frame at once (Ctrl+Z undoes it per
+  frame). By default a look keeps each frame's own exposure, warmth and tint; tick **Include
+  exposure and white balance** to carry those too. Saving under an existing name updates that
+  look. Looks are also in the export panel's **Look** menu, applied to each frame's own edit, and
+  with **Film in file name** the files are named after the look (`L1002695_portra-pushed.jpg`).
+  The CLI gets `export --look "<name>"`. Looks live in `%APPDATA%\Remjet\looks` as small JSON
+  files, so they survive restarts and updates; settings added in later versions take their
+  defaults when an older look is opened.
+- **Exports record their film look.** Every exported JPG now says which film and settings made it:
+  a one-line caption in the description (`Remjet look: Portra 400, lab scan, pushed 1 stop,
+  exposure +0.50 EV`), which Windows, Lightroom and most photo viewers show, and every setting in
+  the file's XMP. The new **Record film look** checkbox in the export panel (on by default; CLI:
+  `--no-look`) turns it off. This works for single and batch exports alike.
+- **More camera metadata is kept:** GPS position (if the camera recorded one; the M9 doesn't),
+  exposure program, metering mode, flash, maximum aperture, time zone, sub-second time and lens
+  serial number, alongside the camera, lens, date and exposure already copied. **Keep location**
+  (CLI: `--no-gps`) leaves the GPS position out, e.g. for photos you share online.
+- **Android app (experimental).** Open an M9 DNG on a phone, pick any film (or neutral), and export
+  a JPEG at full (18 MP) or half (4.5 MP) size, with the camera's EXIF kept. It uses the same
+  processing as the desktop app. Android 7.0 or newer; releases include
+  `Remjet-<version>-android.apk`. See [docs/ANDROID.md](docs/ANDROID.md).
 
 ## 0.1.0-alpha.8
 

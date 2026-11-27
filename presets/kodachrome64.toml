@@ -73,15 +73,22 @@ blur_px = 1.1
 amount = 0.4
 
 [halation]
-# Glow from light reflecting off the film base into the red layer. Kodachrome
-# had an anti-halation backing, so the per-image Halation slider defaults to 0;
-# these set the character when you turn it up.
-# Spread (Gaussian sigma) in pixels at full M9 resolution (~0.28 mm on film).
+# Glow from light that passes through the film, reflects off the back of the
+# base and exposes the emulsion again. Mostly red: the reflected light
+# re-exposes the bottom, red-sensitive layer first.
+# Protection: rem-jet (carbon) backing, removed in processing. Kodak publishes
+# no halation figure, so the strength (0..1, 1 = no protection at all) is an
+# estimate by type of protection, set by eye; the per-image Halation control
+# starts here.
+backing = "rem-jet (carbon) backing, removed in processing"
+strength = 0.04
+# Base thickness sets the spread (sigma = 1.45 x base): 5.3 mil acetate
+# (E-55).
+base_um = 135.0
 radius_px = 40.0
 # Only highlights brighter than this many stops over mid-grey glow. Kept low
 # because the camera clips light sources at only ~3 stops over grey.
 threshold_stops = 1.75
-# Share of the reflected light reaching the red, green, blue layers.
 tint = [1.0, 0.22, 0.04]
 
 [projection]

@@ -30,8 +30,10 @@ Neutral camera render (left) vs. Kodachrome 64 (right), straight out of Remjet w
 ![Roadside shrine](docs/images/compare-L1004071.jpg)
 ![Lighthouse](docs/images/compare-L1003695.jpg)
 
-Optional **halation**, the red glow around bright lights that film without an anti-halation layer shows
-(off by default, since real Kodachrome had one):
+**Halation**, the red glow film shows around bright lights, follows each film's anti-halation
+protection: faint on every Kodak still film (Kodachrome's rem-jet backing protects best), with its
+spread set by the base thickness in the datasheet. Turn it up towards 1 for the strong glow of film
+with no backing at all:
 
 ![Halation off vs on](docs/images/halation.jpg)
 
@@ -58,11 +60,15 @@ Optional **halation**, the red glow around bright lights that film without an an
   Full **undo/redo** (Ctrl+Z / Ctrl+Y).
 - **Scanned or projected:** view the slide as a film scanner reads it (open shadows) or as it looks
   projected on a screen (full density range, deep blacks, warm lamp, soft corner falloff).
+- **Saved looks:** keep a film with its output, push/pull and adjustments (highlight fit, scanner
+  colour, grain, halation...) under a name, then apply it to other frames or use it for a batch
+  export. Each frame keeps its own exposure and white balance unless you include them in the look.
 - **Batch work:** select several images, copy and paste settings, and export one, selected, edited or
   all images to JPG, with progress and cancel. Export a whole shoot in one look (any film, keeping
   each frame's own adjustments, or one frame's settings for all) without changing your edits.
-- **Good exports:** full-resolution or resized JPGs with 4:4:4 colour and camera metadata (date,
-  shutter speed, ISO, focal length).
+- **Good exports:** full-resolution or resized JPGs with 4:4:4 colour and camera metadata (camera,
+  lens, date, shutter speed, aperture, ISO, focal length, GPS if recorded), and the film look and
+  its settings recorded in the file's description and XMP.
 - **Compare:** hold **B** for before/after; split the photo with a draggable divider or show two
   versions side by side (zoomed together), against the unfilmed frame or another film; or open a
   real Kodachrome scan beside your photo with **Reference…**.
@@ -81,6 +87,10 @@ integrated GPU works), and about 2 GB of free RAM for full-resolution zoom and e
 code-signed yet (free signing through SignPath Foundation is being applied for; see
 [Code signing policy](#code-signing-policy)). Choose *More info → Run anyway*, or build it yourself
 from source (below).
+
+**Android (experimental):** `Remjet-<version>-android.apk` on the same page opens a DNG on a
+phone, applies a film and exports a JPEG. Android 7.0 or newer. See
+[docs/ANDROID.md](docs/ANDROID.md) for installing it.
 
 ## Using it
 
@@ -108,6 +118,8 @@ from source (below).
   contents, so they survive moving or renaming folders. (Exact copies of the same DNG share an
   edit.) *Reset all* returns an image to unedited. Edit files left beside DNGs by 0.1.0-alpha.1 are
   moved into the store automatically when you open the folder.
+- **Saved looks:** `%APPDATA%\Remjet\looks`, one small JSON file per look. Looks saved by an
+  older version still open in newer ones (new settings take their defaults).
 - **App settings and tuned films:** `%APPDATA%\Remjet`. To keep everything elsewhere (for example
   on a USB stick), set the environment variable `REMJET_DATA_DIR` to a folder.
 - **Exports:** `<your folder>\exports` unless you choose another folder.
@@ -148,6 +160,8 @@ There are more details in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 remjet-cli export "D:\Photos\Japan" --max-edge 2048 --edited-only
 # Export the whole shoot as Portra 400, keeping each frame's own adjustments
 remjet-cli export "D:\Photos\Japan" --film portra400 --film-in-name
+# Export it with a look saved in the app (files named L1002695_portra-pushed.jpg)
+remjet-cli export "D:\Photos\Japan" --look "Portra pushed" --film-in-name
 # Show what the decoder sees in each file
 remjet-cli info "D:\Photos\Japan"
 ```

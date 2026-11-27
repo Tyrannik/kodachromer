@@ -639,7 +639,7 @@ mod tests {
             }
             let base = Edit { preset: Some(id.clone()), ..Default::default() };
             edits.push(base.clone());
-            edits.push(Edit { halation: 0.7, highlights: -0.5, exposure_ev: 0.6, warmth: 0.3, ..base.clone() });
+            edits.push(Edit { halation: Some(0.7), highlights: -0.5, exposure_ev: 0.6, warmth: 0.3, ..base.clone() });
             edits.push(edit::with_film(&Edit { output: OutputMode::Print, ..base.clone() }, Some(&id)));
             edits.push(edit::with_film(&Edit { output: OutputMode::Projection, scanner_colour: false, ..base.clone() }, Some(&id)));
         }

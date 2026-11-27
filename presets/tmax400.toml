@@ -48,9 +48,20 @@ blur_px = 1.2
 amount = 0.4
 
 [halation]
-# Glow from light reflecting off the film base (per-image Halation slider;
-# 0 by default). Neutral for a black-and-white film.
+# Glow from light that passes through the film, reflects off the back of the
+# base and exposes the emulsion again. Neutral for a black-and-white film.
+# Protection: anti-halation dye (Kodak doesn't say where; 35 mm
+# black-and-white films usually tint the base). Kodak publishes no halation
+# figure, so the strength (0..1, 1 = no protection at all) is an estimate by
+# type of protection, set by eye; the per-image Halation control starts here.
+backing = "anti-halation dye"
+strength = 0.1
+# Base thickness sets the spread (sigma = 1.45 x base): estimate: acetate
+# (F-4043 lists no 35 mm base).
+base_um = 125.0
 radius_px = 40.0
+# Only highlights brighter than this many stops over mid-grey glow. Kept low
+# because the camera clips light sources at only ~3 stops over grey.
 threshold_stops = 1.75
 tint = [1.0, 1.0, 1.0]
 

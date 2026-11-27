@@ -27,7 +27,7 @@ fn main() -> anyhow::Result<()> {
         for film in films {
             for (label, e) in [
                 ("default", Edit { preset: Some(film.into()), ..Default::default() }),
-                ("halation", Edit { preset: Some(film.into()), halation: 0.6, ..Default::default() }),
+                ("halation", Edit { preset: Some(film.into()), halation: Some(0.6), ..Default::default() }),
                 ("print", Edit { preset: Some(film.into()), output: OutputMode::Print, ..Default::default() }),
             ] {
                 let mut times = Vec::new();

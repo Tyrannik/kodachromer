@@ -17,6 +17,7 @@ use eframe::egui;
 use remjet_core::develop::{self, CameraImage, Quality};
 use remjet_core::edit::{self, Edit, ExportOptions, OutputMode};
 use remjet_core::film::FilmPreset;
+use remjet_core::looks::{self, Look};
 use remjet_core::{output, presets, raw};
 use image::RgbImage;
 use rawler::decoders::Orientation;
@@ -486,6 +487,8 @@ enum ExportLook {
     ThisFrame,
     /// Each frame's own adjustments, with this film.
     Film(String),
+    /// A saved look (by id), applied to each frame's own edit.
+    Look(String),
 }
 
 /// The settings a batch export uses: each frame's own, one edit for all,
@@ -495,6 +498,7 @@ enum BatchLook {
     Own,
     All(Edit),
     Film(String),
+    Look(Look),
 }
 
 impl BatchLook {
@@ -503,6 +507,7 @@ impl BatchLook {
             BatchLook::Own => edit::load(path).unwrap_or_default(),
             BatchLook::All(e) => e.clone(),
             BatchLook::Film(id) => edit::with_film(&edit::load(path).unwrap_or_default(), Some(id)),
+            BatchLook::Look(look) => look.apply(&edit::load(path).unwrap_or_default()),
         }
     }
 }
@@ -521,6 +526,7 @@ fn spawn_batch(ctx: egui::Context, files: Vec<PathBuf>, out_dir: Option<PathBuf>
         BatchLook::Own => String::new(),
         BatchLook::All(_) => " with one frame's settings".into(),
         BatchLook::Film(id) => format!(" as {}", presets::load(id).map_or(id.clone(), |p| p.name)),
+        BatchLook::Look(look) => format!(" with the look {}", look.name),
     };
     let batch = Batch {
         total: files.len(),
@@ -600,9 +606,9 @@ fn describe_change(a: &Edit, b: &Edit) -> String {
     check(a.highlights != b.highlights, "highlights");
     check(a.fit_highlights != b.fit_highlights, "highlight fit");
     check(a.scanner_colour != b.scanner_colour, "scanner colour");
-    check(a.halation != b.halation, "halation");
+    check(a.halation != b.halation || a.halation_on != b.halation_on, "halation");
     check(a.sharpen != b.sharpen, "sharpen");
-    check(a.grain != b.grain, "grain");
+    check(a.grain != b.grain || a.grain_on != b.grain_on, "grain");
     check(a.grain_size != b.grain_size, "grain size");
     match names.len() {
         0 => "no change".into(),
@@ -631,6 +637,12 @@ struct FilmApp {
     preset_list: Vec<(String, String)>,
     tune: Option<Tune>,
     new_preset_name: String,
+    /// Saved looks as (id, look), sorted by name.
+    looks: Vec<(String, Look)>,
+    /// Name typed for saving the current settings as a look.
+    new_look_name: String,
+    /// Whether a look saved now also carries exposure and white balance.
+    look_include_exposure: bool,
     /// Reference image shown beside the preview: (file name, texture).
     reference: Option<(String, egui::TextureHandle)>,
 
@@ -711,6 +723,9 @@ impl FilmApp {
             preset_list: presets::list(),
             tune: None,
             new_preset_name: String::new(),
+            looks: looks::list(),
+            new_look_name: String::new(),
+            look_include_exposure: false,
             reference: None,
             preview_tx,
             preview_rx,
@@ -902,20 +917,44 @@ impl FilmApp {
     fn paste_settings(&mut self, ctx: &egui::Context, from_text: Option<&str>) {
         // Prefer settings pasted from the system clipboard (e.g. copied in an
         // earlier session); fall back to the in-app clipboard.
-        let parsed = from_text.and_then(|t| serde_json::from_str::<ClipboardSettings>(t.trim()).ok()).map(|c| c.remjet_settings);
+        let parsed = from_text.and_then(|t| serde_json::from_str::<ClipboardSettings>(t.trim()).ok()).map(|c| c.remjet_settings.migrated());
         let Some(clip) = parsed.or_else(|| self.clipboard.clone()) else {
             self.show_toast("Nothing to paste — copy an image's settings first (Ctrl+C)".into());
             return;
         };
+        let (n, failed, first) = self.apply_to_selection(ctx, |_| clip.clone());
+        self.show_toast(match failed {
+            0 if n == 1 => format!("Pasted settings to {first} (Ctrl+Z to undo)"),
+            0 => format!("Pasted settings to {n} images (Ctrl+Z undoes it per image)"),
+            f => format!("Pasted to {} of {n} images; {f} could not be saved", n - f),
+        });
+    }
+
+    /// Apply a saved look to the selected frames (each keeps its own
+    /// exposure and white balance unless the look carries them).
+    fn apply_look(&mut self, ctx: &egui::Context, look: &Look) {
+        let (n, failed, first) = self.apply_to_selection(ctx, |e| look.apply(e));
+        let name = &look.name;
+        self.show_toast(match failed {
+            0 if n == 1 => format!("Applied the look {name} to {first} (Ctrl+Z to undo)"),
+            0 => format!("Applied the look {name} to {n} images (Ctrl+Z undoes it per image)"),
+            f => format!("Applied {name} to {} of {n} images; {f} could not be saved", n - f),
+        });
+    }
+
+    /// Replace each selected frame's edit with `change(its edit)`, saving it
+    /// with an undo step. Returns (frames, failures, first frame's name).
+    fn apply_to_selection(&mut self, ctx: &egui::Context, change: impl Fn(&Edit) -> Edit) -> (usize, usize, String) {
         self.save_if_changed();
         let targets: Vec<PathBuf> = self.selection.iter().filter_map(|&i| self.files.get(i).cloned()).collect();
         let mut failed = 0;
         for path in &targets {
             let previous = edit::load(path).unwrap_or_default();
-            if previous == clip {
+            let next = change(&previous);
+            if previous == next {
                 continue;
             }
-            match self.persist(path, &clip) {
+            match self.persist(path, &next) {
                 Ok(()) => {
                     let h = self.history.entry(path.clone()).or_default();
                     h.undo.push(previous);
@@ -925,17 +964,14 @@ impl FilmApp {
             }
         }
         if self.selected.is_some_and(|i| self.selection.contains(&i)) {
-            self.edit = clip.clone();
-            self.saved_edit = clip;
+            let next = change(&self.saved_edit);
+            self.edit = next.clone();
+            self.saved_edit = next;
         }
-        // Refresh the pasted thumbnails.
+        // Refresh the changed thumbnails.
         spawn_thumbnails(ctx.clone(), targets.clone(), self.thumb_gen.clone(), self.thumb_tx.clone());
-        let n = targets.len();
-        self.show_toast(match failed {
-            0 if n == 1 => format!("Pasted settings to {} (Ctrl+Z to undo)", file_name(&targets[0])),
-            0 => format!("Pasted settings to {n} images (Ctrl+Z undoes it per image)"),
-            f => format!("Pasted to {} of {n} images; {f} could not be saved", n - f),
-        });
+        let first = targets.first().map(|p| file_name(p)).unwrap_or_default();
+        (targets.len(), failed, first)
     }
 
     fn show_toast(&mut self, message: String) {
@@ -948,12 +984,25 @@ impl FilmApp {
         }
         self.save_if_changed();
         self.settings.save();
+        let mut opts = self.settings.export.clone();
         let look = match &self.export_look {
             ExportLook::Own => BatchLook::Own,
             ExportLook::ThisFrame => BatchLook::All(self.edit.clone()),
             ExportLook::Film(id) => BatchLook::Film(id.clone()),
+            ExportLook::Look(id) => match self.looks.iter().find(|(i, _)| i == id) {
+                Some((id, look)) => {
+                    // "Film in file name" names the files after the look.
+                    opts.name_tag = Some(id.clone());
+                    BatchLook::Look(look.clone())
+                }
+                None => {
+                    self.show_toast("That look no longer exists; choose another".into());
+                    self.export_look = ExportLook::Own;
+                    return;
+                }
+            },
         };
-        self.batch = Some(spawn_batch(ctx.clone(), files, self.settings.export_dir.clone(), self.settings.export.clone(), look));
+        self.batch = Some(spawn_batch(ctx.clone(), files, self.settings.export_dir.clone(), opts, look));
     }
 
     fn film_name(&self, preset: Option<&str>) -> String {
@@ -1037,17 +1086,21 @@ impl FilmApp {
                 mipmap_mode: Some(egui::TextureFilter::Linear),
                 ..lin
             };
+            // Fit previews: mipmapped too, so a window smaller than the
+            // render averages the grain (as a smaller export would) instead
+            // of sampling every other pixel, which looks coarser and harsher.
+            let fit_opts = egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..lin };
             match res.out {
                 Ok(PreviewOut::Fit { after, before, other, thumb, full_size, camera_warning }) => {
                     self.set_camera_warning(&res.path, camera_warning);
                     self.thumbs.insert(res.path.clone(), ctx.load_texture(thumb_name(&res.path), thumb, lin));
-                    self.fit_after = Some(ctx.load_texture("after", after, lin));
+                    self.fit_after = Some(ctx.load_texture("after", after, fit_opts));
                     if let Some(before) = before {
-                        self.fit_before = Some(ctx.load_texture("before", before, lin));
+                        self.fit_before = Some(ctx.load_texture("before", before, fit_opts));
                         self.fit_before_key = Some((res.path.clone(), neutral_of(&res.key.0)));
                     }
                     if let (Some(img), Some(e)) = (other, res.other.clone()) {
-                        self.fit_other = Some((ctx.load_texture("other", img, lin), e));
+                        self.fit_other = Some((ctx.load_texture("other", img, fit_opts), e));
                     }
                     self.fit_path = Some(res.path.clone());
                     self.full_size = Some(full_size);
@@ -1325,6 +1378,7 @@ impl FilmApp {
             None => "None (neutral)".to_string(),
             Some(id) => self.preset_list.iter().find(|(i, _)| i == id).map_or(format!("{id} (missing)"), |p| p.1.clone()),
         };
+        self.look_picker(ui);
         row(ui, "Stock", |ui| {
             egui::ComboBox::from_id_salt("film").width(ui.available_width()).selected_text(current).show_ui(ui, |ui| {
                 for (id, name) in &self.preset_list {
@@ -1338,7 +1392,7 @@ impl FilmApp {
         let loaded = self.edit.preset.as_deref().and_then(|id| presets::load(id).ok());
         let mono = loaded.as_ref().is_some_and(|p| p.is_monochrome());
         let developments = loaded.as_ref().map(|p| p.developments()).unwrap_or_default();
-        let print = loaded.filter(|p| p.is_negative()).and_then(|p| p.print);
+        let print = loaded.clone().filter(|p| p.is_negative()).and_then(|p| p.print);
         ui.add_enabled_ui(self.edit.preset.is_some(), |ui| {
             let negative = print.is_some() || mono;
             let paper = print.as_ref().map(|p| p.name.clone()).unwrap_or_default();
@@ -1421,10 +1475,42 @@ impl FilmApp {
                  Off: the raw readings, with flatter colour, most visibly in bright saturated colours such as yellows.",
             );
         });
-        slider(ui, film, &mut e.halation, 0.0..=1.0, 0.01, "Halation", d.halation, Some("The red-orange glow film shows around bright lights, from light that passes through the film, reflects off its back and exposes it again. 0 is off."));
         slider(ui, true, &mut e.sharpen, 0.0..=1.0, 0.01, "Sharpen", d.sharpen, Some("Detail sharpening like a film scanner's. It works on brightness only, so it doesn't add colour fringes."));
-        slider(ui, film, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain, None);
-        slider(ui, film, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size, Some("Size of the grain clumps, relative to the film's own. Grain is sized on the film, so it looks the same at any export size."));
+
+        // Grain: the film's own strength from its datasheet, on/off, then
+        // strength and clump size relative to it.
+        let grain_info = match &loaded {
+            Some(p) => format!(
+                "{}'s grain, scaled from Kodak's rms granularity for it (for colour negatives, which Kodak rates by Print Grain Index \
+                 instead, an estimate from that). Faster films are grainier, and a push raises grain with the extra contrast it develops. \
+                 Grain is sized on the film, so a fit-to-window view or a small export shows it as a scaled-down scan would: finer and \
+                 softer than at 100%.",
+                p.name
+            ),
+            None => "Film grain. Choose a film to use it.".to_string(),
+        };
+        toggle_row(ui, film, &mut e.grain_on, "Film grain", &grain_info);
+        slider(ui, film && e.grain_on, &mut e.grain, 0.0..=4.0, 0.05, "Grain", d.grain, Some("Grain strength relative to the film's own (1)."));
+        slider(ui, film && e.grain_on, &mut e.grain_size, 0.5..=4.0, 0.05, "Grain size", d.grain_size, Some("Size of the grain clumps, relative to the film's own. Grain is sized on the film, so it looks the same at any export size."));
+
+        // Halation: each film's own strength, set by its anti-halation backing.
+        let own = loaded.as_ref().map_or(0.0, |p| p.halation.strength as f32);
+        let hal_info = match &loaded {
+            Some(p) => format!(
+                "The glow film shows around bright lights: light passes through the film, reflects off the back of its base and exposes it again, \
+                 mostly in the red-sensitive layer, so it glows red-orange (grey on black-and-white film). The base's thickness sets how far it spreads. \
+                 {}: {}, so its glow is faint (strength {:.2}). 1 is film with no protection at all, such as motion-picture film with its rem-jet backing removed.",
+                p.name,
+                p.halation.backing.as_deref().unwrap_or("anti-halation protection"),
+                own
+            ),
+            None => "Halation. Choose a film to use it.".to_string(),
+        };
+        toggle_row(ui, film, &mut e.halation_on, "Halation", &hal_info);
+        let mut strength = e.halation.unwrap_or(own);
+        slider(ui, film && e.halation_on, &mut strength, 0.0..=1.0, 0.01, "Strength", own, Some("Halation strength. It starts at the film's own; double-click to go back to it. 1 is film with no anti-halation protection."));
+        // Follow the film (so a film swap takes the new film's own) unless changed.
+        e.halation = if (strength - own).abs() < 1e-4 { None } else { Some(strength) };
         theme::hint(ui, "Double-click a slider to reset it.");
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -1459,8 +1545,172 @@ impl FilmApp {
             }
         });
 
+        self.save_look_section(ui);
         self.export_section(ui);
         ui.add_space(14.0);
+    }
+
+    /// The saved look the current edit matches, if any.
+    fn matching_look(&self) -> Option<&(String, Look)> {
+        self.looks.iter().find(|(_, l)| l.matches(&self.edit))
+    }
+
+    /// One-line description of a look, for its tooltip.
+    fn look_summary(&self, look: &Look) -> String {
+        let e = &look.settings;
+        let d = Edit::default();
+        let mut parts = vec![self.film_name(e.preset.as_deref())];
+        let preset = e.preset.as_deref().and_then(|id| presets::load(id).ok());
+        if let Some(p) = &preset {
+            parts.push(
+                match (e.output, p.is_negative() || p.is_monochrome()) {
+                    (OutputMode::Print, _) => "optical print",
+                    (OutputMode::Projection, _) => "projected",
+                    (_, true) => "lab scan",
+                    _ => "scanned",
+                }
+                .into(),
+            );
+            if let Some((_, name)) = p.developments().into_iter().find(|d| d.0 == e.push) {
+                parts.push(name);
+            }
+        }
+        // Signed for the settings centred on 0, plain for amounts.
+        let mut num = |v: f32, def: f32, name: &str, signed: bool| {
+            if (v - def).abs() > 1e-4 {
+                parts.push(if signed { format!("{name} {v:+.2}") } else { format!("{name} {v:.2}") });
+            }
+        };
+        if look.include_exposure {
+            num(e.exposure_ev, d.exposure_ev, "exposure", true);
+            num(e.warmth, d.warmth, "warmth", true);
+            num(e.tint, d.tint, "tint", true);
+        }
+        if e.preset.is_some() {
+            num(e.highlights, d.highlights, "highlights", true);
+            if let Some(h) = e.halation {
+                num(h, -1.0, "halation", false);
+            }
+            num(e.grain, d.grain, "grain", false);
+            num(e.grain_size, d.grain_size, "grain size", false);
+        }
+        num(e.sharpen, d.sharpen, "sharpen", false);
+        if e.preset.is_some() && !e.halation_on {
+            parts.push("halation off".into());
+        }
+        if e.preset.is_some() && !e.grain_on {
+            parts.push("grain off".into());
+        }
+        if e.preset.is_some() && !e.fit_highlights {
+            parts.push("highlight fit off".into());
+        }
+        if e.preset.is_some() && !e.scanner_colour {
+            parts.push("scanner colour off".into());
+        }
+        let mut text = parts.join(" · ");
+        text.push_str(if look.include_exposure {
+            ".\nAlso sets exposure and white balance."
+        } else {
+            ".\nKeeps each frame's own exposure and white balance."
+        });
+        text
+    }
+
+    /// "Look" row at the top of the Film section: apply a saved look to the
+    /// selected frames.
+    fn look_picker(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let current = match (self.matching_look(), self.looks.is_empty()) {
+            (Some((_, l)), _) => l.name.clone(),
+            (None, true) => "No saved looks yet".into(),
+            (None, false) => "Custom".into(),
+        };
+        let n = self.selection.len();
+        let mut chosen: Option<Look> = None;
+        row_info(ui, "Look", Some(LOOK_INFO), |ui| {
+            ui.add_enabled_ui(!self.looks.is_empty(), |ui| {
+                egui::ComboBox::from_id_salt("look").width(ui.available_width()).selected_text(current).show_ui(ui, |ui| {
+                    if n > 1 {
+                        ui.label(egui::RichText::new(format!("Applies to the {n} selected frames")).small().color(theme::TEXT_WEAK));
+                    }
+                    for (_, look) in &self.looks {
+                        let film_ok = look.settings.preset.as_deref().is_none_or(|id| presets::load(id).is_ok());
+                        let selected = look.matches(&self.edit);
+                        let resp = ui.add_enabled(film_ok, egui::Button::selectable(selected, &look.name));
+                        let resp = if film_ok {
+                            resp.on_hover_text(self.look_summary(look))
+                        } else {
+                            resp.on_disabled_hover_text("Its film has been deleted")
+                        };
+                        if resp.clicked() {
+                            chosen = Some(look.clone());
+                        }
+                    }
+                });
+            });
+        });
+        if let Some(look) = chosen {
+            self.apply_look(&ctx, &look);
+        }
+    }
+
+    /// Save the current settings as a named look, or delete the matched one.
+    fn save_look_section(&mut self, ui: &mut egui::Ui) {
+        theme::section(ui, "Save look");
+        theme::hint(ui, "Keep this film, development and adjustments as a look to reuse on other frames and in export.");
+        let name = self.new_look_name.trim().to_string();
+        let exists = self.looks.iter().any(|(_, l)| l.name.trim().eq_ignore_ascii_case(&name));
+        let mut save = false;
+        ui.horizontal(|ui| {
+            let button_w = 96.0;
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut self.new_look_name)
+                    .hint_text("Look name")
+                    .desired_width(ui.available_width() - button_w - ui.spacing().item_spacing.x),
+            );
+            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let label = if exists { "Update look" } else { "Save look" };
+            let button = ui
+                .add_enabled(!name.is_empty(), egui::Button::new(label).min_size(egui::vec2(button_w, 0.0)))
+                .on_hover_text(if exists { "Replace the saved look of this name with the current settings" } else { "Save the current settings as a look" });
+            save = !name.is_empty() && (button.clicked() || enter);
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.look_include_exposure, "Include exposure and white balance");
+            theme::info(
+                ui,
+                "Off: the look keeps each frame's own exposure, warmth and tint, which usually differ from shot to shot. \
+                 On: applying the look sets those too, for frames shot in the same light.",
+            );
+        });
+        if save {
+            let look = Look::new(&name, &self.edit, self.look_include_exposure);
+            match looks::save(&look) {
+                Ok(_) => {
+                    self.looks = looks::list();
+                    self.new_look_name.clear();
+                    self.show_toast(format!("{} the look {name}. Pick it under Film › Look, or in Export", if exists { "Updated" } else { "Saved" }));
+                }
+                Err(e) => self.status = format!("Could not save look: {e:#}"),
+            }
+        }
+        if let Some((id, look)) = self.matching_look().cloned() {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("This frame uses {}", look.name)).small().color(theme::TEXT_WEAK));
+                if ui.small_button("Delete look").on_hover_text("Remove the saved look. Frames that use it keep their settings.").clicked() {
+                    match looks::delete(&id) {
+                        Ok(()) => {
+                            self.looks = looks::list();
+                            if self.export_look == ExportLook::Look(id) {
+                                self.export_look = ExportLook::Own;
+                            }
+                            self.show_toast(format!("Deleted the look {}", look.name));
+                        }
+                        Err(e) => self.status = format!("Could not delete look: {e:#}"),
+                    }
+                }
+            });
+        }
     }
 
     /// The strip under the preview: compare and zoom, with their shortcuts.
@@ -1692,6 +1942,7 @@ impl FilmApp {
             ExportLook::Own => "Each frame's own edit".to_string(),
             ExportLook::ThisFrame => format!("Settings of {this_frame}"),
             ExportLook::Film(id) => format!("{}, own adjustments", self.film_name(Some(id))),
+            ExportLook::Look(id) => self.looks.iter().find(|(i, _)| i == id).map_or_else(|| id.clone(), |(_, l)| format!("Look: {}", l.name)),
         };
         let mut look = self.export_look.clone();
         row_info(ui, "Look", Some(EXPORT_LOOK_INFO), |ui| {
@@ -1699,6 +1950,13 @@ impl FilmApp {
                 ui.selectable_value(&mut look, ExportLook::Own, look_label(&ExportLook::Own));
                 ui.selectable_value(&mut look, ExportLook::ThisFrame, look_label(&ExportLook::ThisFrame))
                     .on_hover_text("Every exported frame gets this frame's film and adjustments");
+                if !self.looks.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Saved look, on each frame's own edit:").small().color(theme::TEXT_WEAK));
+                    for (id, l) in &self.looks {
+                        ui.selectable_value(&mut look, ExportLook::Look(id.clone()), &l.name).on_hover_text(self.look_summary(l));
+                    }
+                }
                 ui.separator();
                 ui.label(egui::RichText::new("Own adjustments, with the film:").small().color(theme::TEXT_WEAK));
                 for (id, name) in &self.preset_list {
@@ -1722,12 +1980,22 @@ impl FilmApp {
         ui.horizontal(|ui| {
             ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
             ui.checkbox(&mut opts.keep_exif, "Keep camera metadata (EXIF)");
-            theme::info(ui, "Copies the date, camera, lens and exposure settings from the DNG into the JPG. Off writes no metadata.");
+            theme::info(ui, "Copies the date, camera, lens, exposure settings and GPS position (if the camera recorded one) from the DNG into the JPG.");
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.add_enabled(opts.keep_exif, egui::Checkbox::new(&mut opts.keep_location, "Keep location"));
+            theme::info(ui, "Keeps the GPS position with the camera metadata. Turn off to leave out where the photo was taken, e.g. for photos you share online. The M9 records no GPS.");
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.checkbox(&mut opts.record_look, "Record film look");
+            theme::info(ui, "Writes the film and settings used into the JPG's description (\"Remjet look: Portra 400, lab scan, exposure +0.50 EV\") and every setting into its XMP, which Lightroom and most photo viewers show.");
         });
         ui.horizontal(|ui| {
             ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
             ui.checkbox(&mut opts.film_in_name, "Film in file name");
-            theme::info(ui, "Names files like L1002695_portra400.jpg, so the same frames can be exported in several looks into one folder without replacing each other.");
+            theme::info(ui, "Names files like L1002695_portra400.jpg (or after the saved look, L1002695_portra-pushed.jpg), so the same frames can be exported in several looks into one folder without replacing each other.");
         });
 
         let dest = match (&self.settings.export_dir, &self.folder) {
@@ -2124,7 +2392,13 @@ Each frame's own edit exports frames as you left them. \
 Settings of the frame you're editing applies its film and every adjustment to all exported frames. \
 Choosing a film keeps each frame's own exposure, colour and other adjustments and swaps only the film, \
 so a whole shoot can be exported as Portra, say, after editing it as Kodachrome. \
+A saved look applies its film, development and adjustments to each frame, keeping the frame's own exposure and \
+white balance unless the look includes them. \
 Saved edits are not changed.";
+
+const LOOK_INFO: &str = "Saved looks: a film with its output, development and adjustments, kept under a name \
+(save one under Save look below). Choosing one applies it to the selected frames; each keeps its own exposure and \
+white balance unless the look includes them. Ctrl+Z undoes it.";
 
 const OUTPUT_INFO: &str = "How the slide is turned into a picture. \
     Scanned slide: as a film scanner reads it, with open shadows and the scanner's colour balance. \
@@ -2149,6 +2423,15 @@ fn slider64(ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<
         // Round so saved presets read cleanly (0.53, not 0.5299999713897705).
         *value = (v as f64 * 1000.0).round() / 1000.0;
     }
+}
+
+/// A checkbox in the slider column, with an (i) explanation.
+fn toggle_row(ui: &mut egui::Ui, enabled: bool, value: &mut bool, text: &str, info: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+        ui.add_enabled(enabled, egui::Checkbox::new(value, text));
+        theme::info(ui, info);
+    });
 }
 
 /// Labelled slider that resets to `default` on double-click.

@@ -1,0 +1,5 @@
+.gradle/
+build/
+local.properties
+# Built by `cargo ndk` (see android/README.md); never committed.
+app/src/main/jniLibs/

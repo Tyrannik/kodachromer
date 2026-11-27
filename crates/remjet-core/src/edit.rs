@@ -17,7 +17,9 @@ use crate::{output, raw};
 /// pre-release builds; found files are imported into the edit store and removed.
 const SIDECAR_SUFFIX: &str = ".kodachromer.json";
 const LEGACY_SIDECAR_SUFFIX: &str = ".m9film.json";
-const EDIT_VERSION: u32 = 1;
+/// 2: halation follows each film (`None`) unless set, with on/off toggles
+/// for grain and halation.
+const EDIT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -31,7 +33,9 @@ pub struct Edit {
     pub warmth: f32,
     /// White balance tint, -1 (green) .. +1 (magenta), relative to as shot.
     pub tint: f32,
-    /// Grain multiplier (1 = preset default, 0 = off).
+    /// Film grain on or off (keeps the strength for when it's turned back on).
+    pub grain_on: bool,
+    /// Grain multiplier (1 = the film's own, from its datasheet).
     pub grain: f32,
     /// Grain clump size multiplier (1 = preset default).
     pub grain_size: f32,
@@ -46,8 +50,11 @@ pub struct Edit {
     pub scanner_colour: bool,
     /// Detail sharpening (like a scanner's), 0 = off.
     pub sharpen: f32,
-    /// Halation glow around bright highlights, 0 = off .. 1 = strong.
-    pub halation: f32,
+    /// Halation (glow around bright highlights) on or off.
+    pub halation_on: bool,
+    /// Halation strength, 0 .. 1 (1 = film with no anti-halation protection
+    /// at all). `None` uses the film's own, set by its anti-halation backing.
+    pub halation: Option<f32>,
     /// Scanned or projected slide.
     pub output: OutputMode,
     /// Push (+) or pull (-) processing in stops; 0 = normal. Only values
@@ -63,14 +70,17 @@ impl Default for Edit {
             exposure_ev: 0.0,
             warmth: 0.0,
             tint: 0.0,
+            grain_on: true,
             grain: 1.0,
             grain_size: 1.0,
             highlights: 0.0,
             fit_highlights: true,
             scanner_colour: true,
             sharpen: 0.3,
-            // Kodachrome had an anti-halation backing, so off by default.
-            halation: 0.0,
+            // Each film's own, from its anti-halation backing (faint on
+            // every Kodak still film; they all have one).
+            halation_on: true,
+            halation: None,
             output: OutputMode::Scan,
             push: 0,
         }
@@ -78,6 +88,18 @@ impl Default for Edit {
 }
 
 impl Edit {
+    /// Bring an edit saved by an earlier version up to date. Version 1 kept
+    /// halation as one number with 0 (the default) meaning off: that is now
+    /// the toggle, so those images still render without halation.
+    pub fn migrated(mut self) -> Self {
+        if self.version < 2 && self.halation == Some(0.0) {
+            self.halation_on = false;
+            self.halation = None;
+        }
+        self.version = EDIT_VERSION;
+        self
+    }
+
     /// White-balance multipliers (R, G, B) for the warmth/tint sliders.
     /// Full slider travel is about +/-1500 K around daylight.
     pub fn wb_adjust(&self) -> [f32; 3] {
@@ -155,7 +177,7 @@ fn import_sidecar(dir: &Path, dng: &Path) -> Option<Edit> {
     for suffix in [SIDECAR_SUFFIX, LEGACY_SIDECAR_SUFFIX] {
         let side = with_suffix(dng, suffix);
         let Ok(text) = std::fs::read_to_string(&side) else { continue };
-        let edit: Edit = serde_json::from_str(&text).ok()?;
+        let edit = serde_json::from_str::<Edit>(&text).ok()?.migrated();
         // Only delete the old file once the edit is safely in the store.
         if save_in(dir, dng, &edit).is_ok() {
             let _ = std::fs::remove_file(&side);
@@ -170,7 +192,7 @@ pub fn load_in(dir: &Path, dng: &Path) -> Option<Edit> {
     if let Some(path) = store_file(dir, dng) {
         if let Ok(text) = std::fs::read_to_string(path) {
             if let Ok(stored) = serde_json::from_str::<StoredEdit>(&text) {
-                return Some(stored.edit);
+                return Some(stored.edit.migrated());
             }
         }
     }
@@ -289,12 +311,12 @@ pub(crate) fn film_model(
         None => crate::presets::load(id)?,
     };
     let params = FilmParams {
-        grain: edit.grain as f64,
+        grain: if edit.grain_on { edit.grain as f64 } else { 0.0 },
         grain_size: edit.grain_size as f64,
         highlights: edit.highlights as f64,
         sensor_white: edit.fit_highlights.then(|| cam.clip_white()),
         scanner_colour: edit.scanner_colour,
-        halation: edit.halation as f64,
+        halation: if edit.halation_on { edit.halation.map(f64::from) } else { Some(0.0) },
         push: if preset.supports_push(edit.push) { edit.push } else { 0 },
         output: edit.output,
         pixel_scale,
@@ -346,16 +368,26 @@ pub struct ExportOptions {
     pub quality: u8,
     /// Resize so the long edge is at most this many pixels (None = full size).
     pub max_edge: Option<u32>,
-    /// Copy camera metadata (date, exposure, camera, lens) into the JPEG.
+    /// Copy camera metadata (date, exposure, camera, lens, GPS) into the JPEG.
     pub keep_exif: bool,
+    /// With `keep_exif`, also copy the GPS position if the camera recorded
+    /// one. Off leaves the place out, e.g. for photos shared online.
+    pub keep_location: bool,
+    /// Record the film look and its settings in the JPEG (EXIF
+    /// ImageDescription and XMP), whether or not camera metadata is kept.
+    pub record_look: bool,
     /// Add the film to the file name (`L1002695_portra400.jpg`), so one
     /// shoot can be exported in several looks into the same folder.
     pub film_in_name: bool,
+    /// With `film_in_name`, use this in the file name instead of the film
+    /// id (the saved look's id when exporting with a look). Not persisted.
+    #[serde(skip)]
+    pub name_tag: Option<String>,
 }
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        Self { quality: 92, max_edge: None, keep_exif: true, film_in_name: false }
+        Self { quality: 92, max_edge: None, keep_exif: true, keep_location: true, record_look: true, film_in_name: false, name_tag: None }
     }
 }
 
@@ -371,15 +403,99 @@ pub fn export_jpeg(path: &Path, edit: &Edit, out_dir: &Path, opts: &ExportOption
             img = image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3);
         }
     }
-    let exif = if opts.keep_exif { crate::exif::read(path).ok() } else { None };
+    let (exif, xmp) = export_metadata(path, edit, opts);
     let out = out_dir.join(export_name(path, edit, opts));
-    output::write_jpeg_with_exif(&img, &out, opts.quality.clamp(1, 100), exif.as_ref())?;
+    output::write_jpeg_with_meta(&img, &out, opts.quality.clamp(1, 100), exif.as_ref(), xmp.as_deref())?;
     Ok(out)
+}
+
+/// The EXIF and XMP an export of `path` carries under `opts`. A DNG whose
+/// metadata can't be read still gets the look recorded.
+pub fn export_metadata(path: &Path, edit: &Edit, opts: &ExportOptions) -> (Option<crate::exif::ExifInfo>, Option<String>) {
+    let mut exif = if opts.keep_exif { crate::exif::read(path).ok() } else { None };
+    if let Some(e) = exif.as_mut().filter(|_| !opts.keep_location) {
+        e.gps = None;
+    }
+    if !opts.record_look {
+        return (exif, None);
+    }
+    let preset = edit.preset.as_deref().and_then(|id| crate::presets::load(id).ok());
+    let description = describe_look(edit, preset.as_ref());
+    let xmp = crate::xmp::packet(edit, preset.as_ref().map(|p| p.name.as_str()), &description);
+    let mut exif = exif.unwrap_or_default();
+    exif.description = Some(description);
+    (Some(exif), Some(xmp))
+}
+
+/// One-line summary of the look, for the exported file's caption:
+/// `Remjet look: Portra 400, lab scan, pushed 1 stop, exposure +0.50 EV`.
+/// Lists the film, how it's viewed and development, then only the
+/// adjustments that differ from neutral; the XMP carries every setting.
+pub fn describe_look(edit: &Edit, preset: Option<&FilmPreset>) -> String {
+    let mut parts = Vec::new();
+    match preset {
+        None => parts.push("no film (neutral)".to_string()),
+        Some(p) => {
+            parts.push(p.name.clone());
+            let negative = p.is_negative() && !p.is_monochrome();
+            parts.push(match edit.output {
+                OutputMode::Print => match &p.print {
+                    Some(paper) => format!("print on {}", paper.name),
+                    None => "print".into(),
+                },
+                OutputMode::Projection => "projected".into(),
+                OutputMode::Scan if negative => "lab scan".into(),
+                OutputMode::Scan => "scan".into(),
+            });
+            let stops = |n: i32| if n.abs() == 1 { "stop" } else { "stops" };
+            match edit.push {
+                0 => {}
+                n if n > 0 => parts.push(format!("pushed {n} {}", stops(n))),
+                n => parts.push(format!("pulled {} {}", -n, stops(n))),
+            }
+        }
+    }
+    let set = |v: f32| v.abs() >= 0.005;
+    if set(edit.exposure_ev) {
+        parts.push(format!("exposure {:+.2} EV", edit.exposure_ev));
+    }
+    if set(edit.warmth) {
+        parts.push(format!("warmth {:+.2}", edit.warmth));
+    }
+    if set(edit.tint) {
+        parts.push(format!("tint {:+.2}", edit.tint));
+    }
+    if set(edit.highlights) {
+        parts.push(format!("highlights {:+.2}", edit.highlights));
+    }
+    if preset.is_some() {
+        if !edit.grain_on || !set(edit.grain) {
+            parts.push("no grain".into());
+        } else if set(edit.grain - 1.0) {
+            parts.push(format!("grain x{:.2}", edit.grain));
+        }
+        // The film's own halation is part of the film; only mention a change.
+        match (edit.halation_on, edit.halation) {
+            (false, _) => parts.push("no halation".into()),
+            (true, Some(v)) => parts.push(format!("halation {v:.2}")),
+            (true, None) => {}
+        }
+        if !edit.fit_highlights {
+            parts.push("highlight fit off".into());
+        }
+        if !edit.scanner_colour && edit.output == OutputMode::Scan && preset.is_some_and(|p| !p.is_monochrome()) {
+            parts.push("scanner colour off".into());
+        }
+    }
+    format!("Remjet look: {}", parts.join(", "))
 }
 
 /// File name of a DNG's exported JPEG.
 pub fn export_name(path: &Path, edit: &Edit, opts: &ExportOptions) -> String {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    if let Some(tag) = opts.name_tag.as_deref().filter(|_| opts.film_in_name) {
+        return format!("{stem}_{tag}.jpg");
+    }
     match (&edit.preset, opts.film_in_name) {
         (Some(id), true) => format!("{stem}_{id}.jpg"),
         (None, true) => format!("{stem}_neutral.jpg"),
@@ -412,6 +528,42 @@ pub fn with_film(edit: &Edit, preset: Option<&str>) -> Edit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn look_description_lists_film_output_and_changes() {
+        let portra = crate::presets::load("portra400").unwrap();
+        let e = Edit { preset: Some("portra400".into()), exposure_ev: 0.5, warmth: -0.2, push: 1, ..Default::default() };
+        assert_eq!(describe_look(&e, Some(&portra)), "Remjet look: Portra 400, lab scan, pushed 1 stop, exposure +0.50 EV, warmth -0.20");
+        let print = Edit { output: OutputMode::Print, grain: 0.0, push: -1, ..e.clone() };
+        let d = describe_look(&print, Some(&portra));
+        assert!(d.starts_with("Remjet look: Portra 400, print on Endura"), "{d}");
+        assert!(d.contains("pulled 1 stop") && d.contains("no grain"), "{d}");
+        let k = crate::presets::load("kodachrome64").unwrap();
+        let slide = Edit { output: OutputMode::Projection, grain: 0.5, ..Default::default() };
+        assert_eq!(describe_look(&slide, Some(&k)), "Remjet look: Kodachrome 64, projected, grain x0.50");
+        let glow = Edit { halation: Some(0.6), ..Default::default() };
+        assert_eq!(describe_look(&glow, Some(&k)), "Remjet look: Kodachrome 64, scan, halation 0.60");
+        let off = Edit { halation_on: false, ..Default::default() };
+        assert_eq!(describe_look(&off, Some(&k)), "Remjet look: Kodachrome 64, scan, no halation");
+        let neutral = Edit { preset: None, ..Default::default() };
+        assert_eq!(describe_look(&neutral, None), "Remjet look: no film (neutral)");
+    }
+
+    #[test]
+    fn export_metadata_follows_the_options() {
+        // A file that isn't a DNG: camera metadata can't be read, the look
+        // is still recorded.
+        let (root, _store, dng) = setup("meta", b"not a dng");
+        let e = Edit::default();
+        let (exif, xmp) = export_metadata(&dng, &e, &ExportOptions::default());
+        let exif = exif.unwrap();
+        assert_eq!(exif.make, None);
+        assert_eq!(exif.description.as_deref(), Some("Remjet look: Kodachrome 64, scan"));
+        assert!(xmp.unwrap().contains("remjet:Film=\"kodachrome64\""));
+        let off = ExportOptions { record_look: false, keep_exif: false, ..Default::default() };
+        assert_eq!(export_metadata(&dng, &e, &off), (None, None));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// A temp folder with a fake "DNG" of given content, and a store folder.
     fn setup(tag: &str, content: &[u8]) -> (PathBuf, PathBuf, PathBuf) {
@@ -484,6 +636,8 @@ mod tests {
         assert_eq!(export_name(dng, &portra, &plain), "L1002695.jpg");
         assert_eq!(export_name(dng, &portra, &tagged), "L1002695_portra400.jpg");
         assert_eq!(export_name(dng, &Edit { preset: None, ..Default::default() }, &tagged), "L1002695_neutral.jpg");
+        let look = ExportOptions { name_tag: Some("portra-pushed".into()), ..tagged };
+        assert_eq!(export_name(dng, &portra, &look), "L1002695_portra-pushed.jpg");
     }
 
     #[test]
@@ -497,6 +651,18 @@ mod tests {
         let k64 = with_film(&Edit { push: 1, ..neg }, Some("kodachrome64"));
         assert_eq!(k64.push, 0, "Kodachrome has no push");
         assert_eq!(with_film(&slide, None).preset, None);
+    }
+
+    #[test]
+    fn version_1_halation_off_becomes_the_toggle() {
+        let off: Edit = serde_json::from_str(r#"{"version": 1, "halation": 0.0}"#).unwrap();
+        let off = off.migrated();
+        assert!(!off.halation_on && off.halation.is_none());
+        let set: Edit = serde_json::from_str(r#"{"version": 1, "halation": 0.4}"#).unwrap();
+        let set = set.migrated();
+        assert!(set.halation_on && set.halation == Some(0.4), "a chosen strength is kept");
+        let new = Edit::default().migrated();
+        assert!(new.halation_on && new.halation.is_none(), "current edits are untouched");
     }
 
     #[test]

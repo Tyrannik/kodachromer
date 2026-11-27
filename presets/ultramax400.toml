@@ -49,9 +49,20 @@ blur_px = 1.3
 amount = 0.4
 
 [halation]
-# Glow from light reflecting off the film base into the red layer (per-image
-# Halation slider; 0 by default). Same character settings as Kodachrome 64.
+# Glow from light that passes through the film, reflects off the back of the
+# base and exposes the emulsion again. Mostly red: the reflected light
+# re-exposes the bottom, red-sensitive layer first.
+# Protection: anti-halation undercoat. Kodak publishes no halation figure, so
+# the strength (0..1, 1 = no protection at all) is an estimate by type of
+# protection, set by eye; the per-image Halation control starts here.
+backing = "anti-halation undercoat"
+strength = 0.12
+# Base thickness sets the spread (sigma = 1.45 x base): estimate: acetate
+# (E-7023 lists no base).
+base_um = 125.0
 radius_px = 40.0
+# Only highlights brighter than this many stops over mid-grey glow. Kept low
+# because the camera clips light sources at only ~3 stops over grey.
 threshold_stops = 1.75
 tint = [1.0, 0.22, 0.04]
 

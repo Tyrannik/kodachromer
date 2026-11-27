@@ -11,9 +11,11 @@ pub mod film;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod icc;
+pub mod looks;
 pub mod output;
 pub mod paths;
 pub mod presets;
 pub mod raw;
 pub mod sensor;
 pub mod spectral;
+pub mod xmp;
