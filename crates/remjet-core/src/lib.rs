@@ -9,6 +9,7 @@ pub mod edit;
 pub mod exif;
 pub mod film;
 pub mod icc;
+pub mod looks;
 pub mod output;
 pub mod paths;
 pub mod presets;

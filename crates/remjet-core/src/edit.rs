@@ -342,11 +342,15 @@ pub struct ExportOptions {
     /// Add the film to the file name (`L1002695_portra400.jpg`), so one
     /// shoot can be exported in several looks into the same folder.
     pub film_in_name: bool,
+    /// With `film_in_name`, use this in the file name instead of the film
+    /// id (the saved look's id when exporting with a look). Not persisted.
+    #[serde(skip)]
+    pub name_tag: Option<String>,
 }
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        Self { quality: 92, max_edge: None, keep_exif: true, keep_location: true, record_look: true, film_in_name: false }
+        Self { quality: 92, max_edge: None, keep_exif: true, keep_location: true, record_look: true, film_in_name: false, name_tag: None }
     }
 }
 
@@ -449,6 +453,9 @@ pub fn describe_look(edit: &Edit, preset: Option<&FilmPreset>) -> String {
 /// File name of a DNG's exported JPEG.
 pub fn export_name(path: &Path, edit: &Edit, opts: &ExportOptions) -> String {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    if let Some(tag) = opts.name_tag.as_deref().filter(|_| opts.film_in_name) {
+        return format!("{stem}_{tag}.jpg");
+    }
     match (&edit.preset, opts.film_in_name) {
         (Some(id), true) => format!("{stem}_{id}.jpg"),
         (None, true) => format!("{stem}_neutral.jpg"),
@@ -585,6 +592,8 @@ mod tests {
         assert_eq!(export_name(dng, &portra, &plain), "L1002695.jpg");
         assert_eq!(export_name(dng, &portra, &tagged), "L1002695_portra400.jpg");
         assert_eq!(export_name(dng, &Edit { preset: None, ..Default::default() }, &tagged), "L1002695_neutral.jpg");
+        let look = ExportOptions { name_tag: Some("portra-pushed".into()), ..tagged };
+        assert_eq!(export_name(dng, &portra, &look), "L1002695_portra-pushed.jpg");
     }
 
     #[test]
