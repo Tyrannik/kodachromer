@@ -32,6 +32,7 @@ class MainActivity : Activity() {
     private lateinit var filmSpinner: Spinner
     private lateinit var sizeSpinner: Spinner
     private lateinit var openButton: Button
+    private lateinit var samplesButton: Button
     private lateinit var exportButton: Button
 
     /** One worker thread: renders run in order and never overlap. */
@@ -60,6 +61,7 @@ class MainActivity : Activity() {
         filmSpinner = findViewById(R.id.film)
         sizeSpinner = findViewById(R.id.size)
         openButton = findViewById(R.id.open)
+        samplesButton = findViewById(R.id.samples)
         exportButton = findViewById(R.id.export)
 
         films = listOf("" to getString(R.string.neutral)) +
@@ -80,6 +82,10 @@ class MainActivity : Activity() {
         sizeSpinner.setSelection(if (totalMemoryMb() < 3000) 1 else 0)
 
         openButton.setOnClickListener { pickDng() }
+        // Builds from CI bundle a few public-domain M9 DNGs for testing.
+        val samples = bundledSamples()
+        samplesButton.visibility = if (samples.isEmpty()) View.GONE else View.VISIBLE
+        samplesButton.setOnClickListener { pickSample(samples) }
         exportButton.setOnClickListener { confirmExport() }
 
         intent?.let { handleIncoming(it) }
@@ -132,13 +138,31 @@ class MainActivity : Activity() {
 
     private fun openUri(uri: Uri) {
         val name = displayName(uri) ?: "photo.dng"
+        openFrom(name) { contentResolver.openInputStream(uri) }
+    }
+
+    private fun bundledSamples(): List<String> =
+        (assets.list(SAMPLES_DIR) ?: emptyArray()).filter { it.endsWith(".dng", ignoreCase = true) }.sorted()
+
+    private fun pickSample(samples: List<String>) {
+        AlertDialog.Builder(this)
+            .setTitle("Sample DNGs (public domain, raw.pixls.us)")
+            .setItems(samples.toTypedArray()) { _, which ->
+                val name = samples[which]
+                openFrom(name) { assets.open("$SAMPLES_DIR/$name") }
+            }
+            .show()
+    }
+
+    /** Copy a DNG from [open] into the cache folder and show it. */
+    private fun openFrom(name: String, open: () -> java.io.InputStream?) {
         setBusy(true, "Opening $name…")
         worker.execute {
             try {
                 // The core decodes from a file path, so copy the DNG into the
                 // cache folder (an M9 DNG is 18–36 MB).
                 val file = File(cacheDir, "open.dng")
-                contentResolver.openInputStream(uri).use { input ->
+                open().use { input ->
                     requireNotNull(input) { "Couldn't read $name" }
                     file.outputStream().use { input.copyTo(it) }
                 }
@@ -338,6 +362,7 @@ class MainActivity : Activity() {
     private fun setBusy(on: Boolean, message: String) {
         busy.visibility = if (on) View.VISIBLE else View.GONE
         openButton.isEnabled = !on
+        samplesButton.isEnabled = !on
         status.setTextColor(getColor(R.color.muted))
         status.text = message
     }
@@ -354,6 +379,7 @@ class MainActivity : Activity() {
         private const val REQUEST_OPEN = 1
         private const val REQUEST_SAVE = 2
         private const val JPEG_QUALITY = 92
+        private const val SAMPLES_DIR = "samples"
 
         /** Peak memory of a full-size (18 MP) export, measured at ~960 MB. */
         private const val FULL_EXPORT_MB = 1100

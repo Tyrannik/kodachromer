@@ -24,7 +24,8 @@ android {
         versionCode = buildNumber
         versionName = workspaceVersion
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // x86_64 runs natively on BlueStacks and the Android Studio emulator.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
     }
 

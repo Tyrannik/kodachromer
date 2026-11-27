@@ -9,8 +9,9 @@ it uses. To build locally you need the Android SDK and NDK (Android Studio insta
 and `cargo install cargo-ndk`, then from the repository root:
 
 ```sh
-rustup target add aarch64-linux-android armv7-linux-androideabi
-cargo ndk --platform 24 -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs build --release -p remjet-android
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+python3 scripts/fetch-android-samples.py   # optional: sample DNGs for the Samples button
+cargo ndk --platform 24 -t arm64-v8a -t armeabi-v7a -t x86_64 -o android/app/src/main/jniLibs build --release -p remjet-android
 cd android
 ./gradlew assembleRelease     # gradlew.bat on Windows
 ```
