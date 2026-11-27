@@ -82,7 +82,7 @@ jobs:
           -o android/app/src/main/jniLibs
           build --release --locked -p remjet-android
 
-      # A few public-domain M9 DNGs from raw.pixls.us, for the app's Samples
+      # A few public-domain Leica DNGs from raw.pixls.us, for the app's Samples
       # button. Warns (doesn't fail) if the site is down.
       - name: Fetch sample DNGs
         run: python3 scripts/fetch-android-samples.py 3

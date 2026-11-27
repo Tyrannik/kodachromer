@@ -51,8 +51,8 @@
   a JPEG at full (18 MP) or half (4.5 MP) size, with the camera's EXIF kept. It uses the same
   processing as the desktop app. Android 7.0 or newer; releases include
   `Remjet-<version>-android.apk`. See [docs/ANDROID.md](docs/ANDROID.md). Runs on ARM phones and
-  on x86_64 emulators such as BlueStacks, and comes with three public-domain M9 sample DNGs
-  (**Samples** button) for trying it out.
+  on x86_64 emulators such as BlueStacks, and comes with public-domain sample DNGs from an M9
+  and other Leicas (**Samples** button) for trying it out.
 
 ## 0.1.0-alpha.8
 

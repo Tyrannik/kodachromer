@@ -48,8 +48,9 @@ USB debugging on, run `adb install -r Remjet-<version>-android.apk`.
 1. **Open DNG** opens the system file picker. DNGs from a card reader, a USB-C stick, Google
    Drive or the phone's storage all work. You can also share a DNG to Remjet, or choose
    *Open with → Remjet* in a file manager.
-   **Samples** opens one of three public-domain M9 DNGs from [raw.pixls.us](https://raw.pixls.us)
-   that come with the app, handy for trying it on a device without copying photos across.
+   **Samples** opens one of the public-domain DNGs from [raw.pixls.us](https://raw.pixls.us) that
+   come with the app (an M9 plus other Leica bodies, as raw.pixls.us has only one M9 file), handy
+   for trying it on a device without copying photos across.
 2. Choose a **Film** (or *Neutral*). The preview updates.
 3. Choose a **Size** and tap **Export JPEG**. On Android 10 and newer the JPEG goes to
    *Pictures/Remjet* and shows up in the gallery; on older versions you choose where to save it.
