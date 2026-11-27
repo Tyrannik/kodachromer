@@ -61,8 +61,9 @@ Optional **halation**, the red glow around bright lights that film without an an
 - **Batch work:** select several images, copy and paste settings, and export one, selected, edited or
   all images to JPG, with progress and cancel. Export a whole shoot in one look (any film, keeping
   each frame's own adjustments, or one frame's settings for all) without changing your edits.
-- **Good exports:** full-resolution or resized JPGs with 4:4:4 colour and camera metadata (date,
-  shutter speed, ISO, focal length).
+- **Good exports:** full-resolution or resized JPGs with 4:4:4 colour and camera metadata (camera,
+  lens, date, shutter speed, aperture, ISO, focal length, GPS if recorded), and the film look and
+  its settings recorded in the file's description and XMP.
 - **Compare:** hold **B** for before/after; split the photo with a draggable divider or show two
   versions side by side (zoomed together), against the unfilmed frame or another film; or open a
   real Kodachrome scan beside your photo with **Reference…**.
