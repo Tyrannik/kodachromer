@@ -58,6 +58,9 @@ Optional **halation**, the red glow around bright lights that film without an an
   Full **undo/redo** (Ctrl+Z / Ctrl+Y).
 - **Scanned or projected:** view the slide as a film scanner reads it (open shadows) or as it looks
   projected on a screen (full density range, deep blacks, warm lamp, soft corner falloff).
+- **Saved looks:** keep a film with its output, push/pull and adjustments (highlight fit, scanner
+  colour, grain, halation...) under a name, then apply it to other frames or use it for a batch
+  export. Each frame keeps its own exposure and white balance unless you include them in the look.
 - **Batch work:** select several images, copy and paste settings, and export one, selected, edited or
   all images to JPG, with progress and cancel. Export a whole shoot in one look (any film, keeping
   each frame's own adjustments, or one frame's settings for all) without changing your edits.
@@ -108,6 +111,8 @@ from source (below).
   contents, so they survive moving or renaming folders. (Exact copies of the same DNG share an
   edit.) *Reset all* returns an image to unedited. Edit files left beside DNGs by 0.1.0-alpha.1 are
   moved into the store automatically when you open the folder.
+- **Saved looks:** `%APPDATA%\Remjet\looks`, one small JSON file per look. Looks saved by an
+  older version still open in newer ones (new settings take their defaults).
 - **App settings and tuned films:** `%APPDATA%\Remjet`. To keep everything elsewhere (for example
   on a USB stick), set the environment variable `REMJET_DATA_DIR` to a folder.
 - **Exports:** `<your folder>\exports` unless you choose another folder.
@@ -148,6 +153,8 @@ There are more details in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 remjet-cli export "D:\Photos\Japan" --max-edge 2048 --edited-only
 # Export the whole shoot as Portra 400, keeping each frame's own adjustments
 remjet-cli export "D:\Photos\Japan" --film portra400 --film-in-name
+# Export it with a look saved in the app (files named L1002695_portra-pushed.jpg)
+remjet-cli export "D:\Photos\Japan" --look "Portra pushed" --film-in-name
 # Show what the decoder sees in each file
 remjet-cli info "D:\Photos\Japan"
 ```
