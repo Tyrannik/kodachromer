@@ -71,11 +71,10 @@ jobs:
       - name: Test the Android bindings
         run: cargo test -p remjet-android --locked
 
-      # The runner image ships the Android SDK and NDK. Android 7.0 (API 24)
-      # is the oldest version the app supports.
+      # The runner image ships the Android SDK and NDK (cargo-ndk finds it
+      # through ANDROID_NDK_ROOT). Android 7.0 (API 24) is the oldest version
+      # the app supports.
       - name: Build native libraries
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         run: >
           cargo ndk --platform 24 -t arm64-v8a -t armeabi-v7a
           -o android/app/src/main/jniLibs
