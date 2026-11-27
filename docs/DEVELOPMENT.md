@@ -9,6 +9,7 @@ How Remjet is put together, for anyone reading or extending the code.
 | `crates/remjet-core` | Everything that touches pixels: DNG decoding, colour science, the film model, grain, halation, edits/sidecars, export, EXIF. No UI. |
 | `crates/remjet` | The desktop app (egui/eframe). Library, preview worker, editor, film tuning, batch export. |
 | `crates/remjet-cli` | Command-line `info`, `render` and `export` (uses the app's saved edits). |
+| `crates/remjet-android` | JNI bindings for the Android app in `android/` (preview, export, film list). See `android/README.md`. |
 | `presets/` | Film presets as TOML data, compiled in as the built-in films: `kodachrome64.toml` (matrix model), `ektachrome-e100.toml`, `ektachrome-e100vs.toml`, `ektachrome-e200.toml`, `portra160.toml`, `portra400.toml`, `portra800.toml`, `ektar100.toml`, `gold200.toml`, `ultramax400.toml`, `trix400.toml`, `tmax100.toml` and `tmax400.toml` (spectral model; Tri-X and T-Max are `process = "monochrome"`). |
 | `assets/` | Icon, and the Barlow fonts the app embeds (`assets/fonts`, SIL OFL 1.1). |
 

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Neutral greys, like the desktop app, so nothing tints colour judgement. -->
+    <color name="panel">#FF1C1C1C</color>
+    <color name="surround">#FF262626</color>
+    <color name="text">#FFE6E6E6</color>
+    <color name="muted">#FF9A9A9A</color>
+    <color name="amber">#FFF0A830</color>
+    <color name="warning">#FFE86E60</color>
+
+    <style name="Theme.Remjet" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/panel</item>
+        <item name="android:statusBarColor">@color/panel</item>
+        <item name="android:navigationBarColor">@color/panel</item>
+        <item name="android:colorAccent">@color/amber</item>
+        <item name="android:textColorPrimary">@color/text</item>
+    </style>
+</resources>

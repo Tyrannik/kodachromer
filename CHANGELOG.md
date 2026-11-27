@@ -22,6 +22,10 @@
   exposure program, metering mode, flash, maximum aperture, time zone, sub-second time and lens
   serial number, alongside the camera, lens, date and exposure already copied. **Keep location**
   (CLI: `--no-gps`) leaves the GPS position out, e.g. for photos you share online.
+- **Android app (experimental).** Open an M9 DNG on a phone, pick any film (or neutral), and export
+  a JPEG at full (18 MP) or half (4.5 MP) size, with the camera's EXIF kept. It uses the same
+  processing as the desktop app. Android 7.0 or newer; releases include
+  `Remjet-<version>-android.apk`. See [docs/ANDROID.md](docs/ANDROID.md).
 
 ## 0.1.0-alpha.8
 

@@ -1,0 +1,20 @@
+[package]
+name = "remjet-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "JNI bindings that let the Android app use remjet-core"
+publish = false
+
+[lib]
+# cdylib is the .so the Android app loads; rlib keeps `cargo test` working
+# on the desktop.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow = "1.0.104"
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+jni = "0.21.1"
+rawler = "0.8.0"
+remjet-core = { version = "0.1.0-alpha.8", path = "../remjet-core" }
