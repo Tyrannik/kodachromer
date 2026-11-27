@@ -3,7 +3,8 @@
 //! Reads the parsed EXIF from the DNG via rawler, writes a minimal, standard
 //! EXIF block (TIFF little-endian, IFD0 + Exif sub-IFD) and inserts it as an
 //! APP1 segment. Orientation is always written as 1 because exports are
-//! already rotated upright.
+//! already rotated upright. GPS is carried in its own IFD when the camera
+//! recorded a position (the M9 has no GPS, but other cameras' DNGs may).
 
 use std::path::Path;
 
@@ -28,6 +29,47 @@ pub struct ExifInfo {
     pub lens_make: Option<String>,
     pub lens_model: Option<String>,
     pub serial_number: Option<String>,
+    pub lens_serial_number: Option<String>,
+    pub exposure_program: Option<u16>,
+    pub metering_mode: Option<u16>,
+    pub flash: Option<u16>,
+    pub max_aperture: Option<(u32, u32)>,
+    pub offset_time_original: Option<String>,
+    pub sub_sec_time_original: Option<String>,
+    pub gps: Option<Gps>,
+    /// ImageDescription: the look the export was rendered with (written by
+    /// the exporter, not read from the DNG).
+    pub description: Option<String>,
+}
+
+/// Where the photo was taken, as the camera recorded it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Gps {
+    pub latitude_ref: Option<String>,
+    pub latitude: Option<[(u32, u32); 3]>,
+    pub longitude_ref: Option<String>,
+    pub longitude: Option<[(u32, u32); 3]>,
+    pub altitude_ref: Option<u8>,
+    pub altitude: Option<(u32, u32)>,
+    pub timestamp: Option<[(u32, u32); 3]>,
+    pub date_stamp: Option<String>,
+    pub map_datum: Option<String>,
+    pub img_direction_ref: Option<String>,
+    pub img_direction: Option<(u32, u32)>,
+}
+
+impl Gps {
+    /// True if there is a position to write.
+    pub fn has_position(&self) -> bool {
+        self.latitude.is_some() && self.longitude.is_some()
+    }
+}
+
+impl ExifInfo {
+    /// Only the export's own fields: no camera, exposure, date or place.
+    pub fn without_camera(&self) -> ExifInfo {
+        ExifInfo { description: self.description.clone(), ..Default::default() }
+    }
 }
 
 pub fn read(path: &Path) -> Result<ExifInfo> {
@@ -51,11 +93,36 @@ pub fn read(path: &Path) -> Result<ExifInfo> {
         lens_make: nonempty(e.lens_make),
         lens_model: nonempty(e.lens_model),
         serial_number: nonempty(e.serial_number),
+        lens_serial_number: nonempty(e.lens_serial_number),
+        exposure_program: e.exposure_program,
+        metering_mode: e.metering_mode,
+        flash: e.flash,
+        max_aperture: e.max_aperture_value.map(|r| (r.n, r.d)),
+        offset_time_original: nonempty(e.offset_time_original),
+        sub_sec_time_original: nonempty(e.sub_sec_time_original),
+        gps: e.gps.map(|g| {
+            let r3 = |v: Option<[rawler::formats::tiff::Rational; 3]>| v.map(|a| a.map(|r| (r.n, r.d)));
+            Gps {
+                latitude_ref: nonempty(g.gps_latitude_ref),
+                latitude: r3(g.gps_latitude),
+                longitude_ref: nonempty(g.gps_longitude_ref),
+                longitude: r3(g.gps_longitude),
+                altitude_ref: g.gps_altitude_ref,
+                altitude: g.gps_altitude.map(|r| (r.n, r.d)),
+                timestamp: r3(g.gps_timestamp),
+                date_stamp: nonempty(g.gps_date_stamp),
+                map_datum: nonempty(g.gps_map_datum),
+                img_direction_ref: nonempty(g.gps_img_direction_ref),
+                img_direction: g.gps_img_direction.map(|r| (r.n, r.d)),
+            }
+        }).filter(Gps::has_position),
+        description: None,
     })
 }
 
 // ------------------------------------------------------------ TIFF writer
 
+const BYTE: u16 = 1;
 const ASCII: u16 = 2;
 const SHORT: u16 = 3;
 const LONG: u16 = 4;
@@ -77,10 +144,15 @@ struct Ifd {
 impl Ifd {
     fn ascii(&mut self, tag: u16, s: &Option<String>) {
         if let Some(s) = s {
-            let mut data = s.as_bytes().to_vec();
+            // EXIF ASCII is 7-bit: replace anything else rather than write
+            // bytes readers would misread.
+            let mut data: Vec<u8> = s.chars().map(|c| if c.is_ascii() && c != '\0' { c as u8 } else { b'?' }).collect();
             data.push(0);
             self.entries.push(Entry { tag, typ: ASCII, count: data.len() as u32, data });
         }
+    }
+    fn byte(&mut self, tag: u16, v: &[u8]) {
+        self.entries.push(Entry { tag, typ: BYTE, count: v.len() as u32, data: v.to_vec() });
     }
     fn short(&mut self, tag: u16, v: u16) {
         self.entries.push(Entry { tag, typ: SHORT, count: 1, data: v.to_le_bytes().to_vec() });
@@ -92,6 +164,12 @@ impl Ifd {
         if let Some((n, d)) = v.filter(|r| r.1 != 0) {
             let data = [n.to_le_bytes(), d.to_le_bytes()].concat();
             self.entries.push(Entry { tag, typ: RATIONAL, count: 1, data });
+        }
+    }
+    fn rationals(&mut self, tag: u16, v: Option<[(u32, u32); 3]>) {
+        if let Some(v) = v.filter(|v| v.iter().all(|r| r.1 != 0)) {
+            let data = v.iter().flat_map(|(n, d)| [n.to_le_bytes(), d.to_le_bytes()].concat()).collect();
+            self.entries.push(Entry { tag, typ: RATIONAL, count: 3, data });
         }
     }
     fn srational(&mut self, tag: u16, v: Option<(i32, i32)>) {
@@ -137,6 +215,7 @@ impl Ifd {
 /// Build the TIFF-structured EXIF payload (without the APP1 header).
 pub fn build_tiff(info: &ExifInfo, width: u32, height: u32) -> Vec<u8> {
     let mut ifd0 = Ifd::default();
+    ifd0.ascii(0x010E, &info.description);
     ifd0.ascii(0x010F, &info.make);
     ifd0.ascii(0x0110, &info.model);
     ifd0.short(0x0112, 1); // orientation: pixels are already upright
@@ -148,30 +227,78 @@ pub fn build_tiff(info: &ExifInfo, width: u32, height: u32) -> Vec<u8> {
     let mut exif = Ifd::default();
     exif.rational(0x829A, info.exposure_time);
     exif.rational(0x829D, info.fnumber);
+    if let Some(v) = info.exposure_program {
+        exif.short(0x8822, v);
+    }
     if let Some(iso) = info.iso {
         exif.short(0x8827, iso);
     }
     exif.entries.push(Entry { tag: 0x9000, typ: 7, count: 4, data: b"0232".to_vec() }); // ExifVersion
     exif.ascii(0x9003, &info.date_time_original);
     exif.ascii(0x9004, &info.create_date.clone().or_else(|| info.date_time_original.clone()));
+    exif.ascii(0x9011, &info.offset_time_original);
     exif.srational(0x9204, info.exposure_bias);
+    exif.rational(0x9205, info.max_aperture);
+    if let Some(v) = info.metering_mode {
+        exif.short(0x9207, v);
+    }
+    if let Some(v) = info.flash {
+        exif.short(0x9209, v);
+    }
     exif.rational(0x920A, info.focal_length);
+    exif.ascii(0x9291, &info.sub_sec_time_original);
     exif.short(0xA001, 1); // ColorSpace: sRGB
     exif.long(0xA002, width);
     exif.long(0xA003, height);
     exif.ascii(0xA431, &info.serial_number);
     exif.ascii(0xA433, &info.lens_make);
     exif.ascii(0xA434, &info.lens_model);
+    exif.ascii(0xA435, &info.lens_serial_number);
 
-    // IFD0 gets a pointer to the Exif IFD; its size includes that entry.
+    let gps = info.gps.as_ref().filter(|g| g.has_position()).map(|g| {
+        let mut ifd = Ifd::default();
+        ifd.byte(0x0000, &[2, 3, 0, 0]); // GPSVersionID
+        ifd.ascii(0x0001, &g.latitude_ref);
+        ifd.rationals(0x0002, g.latitude);
+        ifd.ascii(0x0003, &g.longitude_ref);
+        ifd.rationals(0x0004, g.longitude);
+        if let Some(r) = g.altitude_ref {
+            ifd.byte(0x0005, &[r]);
+        }
+        ifd.rational(0x0006, g.altitude);
+        ifd.rationals(0x0007, g.timestamp);
+        ifd.ascii(0x0010, &g.img_direction_ref);
+        ifd.rational(0x0011, g.img_direction);
+        ifd.ascii(0x0012, &g.map_datum);
+        ifd.ascii(0x001D, &g.date_stamp);
+        ifd
+    });
+
+    // IFD0 points at the Exif (and GPS) IFDs; its size includes those
+    // pointer entries, so add them before laying out.
     ifd0.long(0x8769, 0);
+    if gps.is_some() {
+        ifd0.long(0x8825, 0);
+    }
     let exif_offset = 8 + ifd0.size();
-    ifd0.entries.last_mut().expect("just pushed").data = (exif_offset as u32).to_le_bytes().to_vec();
+    let gps_offset = exif_offset + exif.size();
+    for e in &mut ifd0.entries {
+        match e.tag {
+            0x8769 => e.data = (exif_offset as u32).to_le_bytes().to_vec(),
+            0x8825 => e.data = (gps_offset as u32).to_le_bytes().to_vec(),
+            _ => {}
+        }
+    }
 
     let mut out = b"II*\0".to_vec();
     out.extend(8u32.to_le_bytes());
     ifd0.write(8, &mut out);
+    debug_assert_eq!(out.len(), exif_offset);
     exif.write(exif_offset, &mut out);
+    if let Some(gps) = gps {
+        debug_assert_eq!(out.len(), gps_offset);
+        gps.write(gps_offset, &mut out);
+    }
     out
 }
 
@@ -241,6 +368,60 @@ mod tests {
         assert_eq!((read_u32(&t, at as usize), read_u32(&t, at as usize + 4)), (1, 250));
         assert_eq!(find(&t, exif, 0x8827).unwrap().2 & 0xFFFF, 160);
         assert_eq!(find(&t, exif, 0xA002).unwrap().2, 5212);
+    }
+
+    #[test]
+    fn gps_and_description_are_written() {
+        let info = ExifInfo {
+            make: Some("Leica Camera AG".into()),
+            description: Some("Remjet look: Tri-X 400, scan".into()),
+            flash: Some(16),
+            gps: Some(Gps {
+                latitude_ref: Some("N".into()),
+                latitude: Some([(51, 1), (30, 1), (1234, 100)]),
+                longitude_ref: Some("W".into()),
+                longitude: Some([(0, 1), (7, 1), (3900, 100)]),
+                altitude_ref: Some(0),
+                altitude: Some((35, 1)),
+                date_stamp: Some("2026:11:27".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let t = build_tiff(&info, 100, 50);
+        let ifd0 = read_u32(&t, 4) as usize;
+        let (typ, count, at) = find(&t, ifd0, 0x010E).unwrap();
+        assert_eq!(typ, ASCII);
+        assert_eq!(&t[at as usize..at as usize + count as usize - 1], b"Remjet look: Tri-X 400, scan");
+        let exif = find(&t, ifd0, 0x8769).unwrap().2 as usize;
+        assert_eq!(find(&t, exif, 0x9209).unwrap().2 & 0xFFFF, 16);
+        let gps = find(&t, ifd0, 0x8825).unwrap().2 as usize;
+        assert_eq!(find(&t, gps, 0x0000).unwrap().2, u32::from_le_bytes([2, 3, 0, 0]));
+        assert_eq!(find(&t, gps, 0x0001).unwrap().2 & 0xFF, b'N' as u32);
+        let (typ, count, at) = find(&t, gps, 0x0002).unwrap();
+        assert_eq!((typ, count), (RATIONAL, 3));
+        let at = at as usize;
+        assert_eq!((read_u32(&t, at), read_u32(&t, at + 4)), (51, 1));
+        assert_eq!((read_u32(&t, at + 16), read_u32(&t, at + 20)), (1234, 100));
+        let (_, count, at) = find(&t, gps, 0x001D).unwrap();
+        assert_eq!(&t[at as usize..at as usize + count as usize - 1], b"2026:11:27");
+        // The whole block is in bounds and parses as EXIF for a real reader.
+        assert!(gps < t.len());
+    }
+
+    #[test]
+    fn no_gps_ifd_without_a_position() {
+        let info = ExifInfo { gps: Some(Gps { altitude: Some((10, 1)), ..Default::default() }), ..Default::default() };
+        let t = build_tiff(&info, 10, 10);
+        assert!(find(&t, read_u32(&t, 4) as usize, 0x8825).is_none());
+    }
+
+    #[test]
+    fn non_ascii_is_replaced() {
+        let info = ExifInfo { description: Some("Portra · 400".into()), ..Default::default() };
+        let t = build_tiff(&info, 10, 10);
+        let (_, count, at) = find(&t, read_u32(&t, 4) as usize, 0x010E).unwrap();
+        assert_eq!(&t[at as usize..at as usize + count as usize - 1], b"Portra ? 400");
     }
 
     #[test]

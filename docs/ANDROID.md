@@ -46,7 +46,8 @@ USB debugging on, run `adb install -r Remjet-<version>-android.apk`.
 2. Choose a **Film** (or *Neutral*). The preview updates.
 3. Choose a **Size** and tap **Export JPEG**. On Android 10 and newer the JPEG goes to
    *Pictures/Remjet* and shows up in the gallery; on older versions you choose where to save it.
-   The file is named `<photo>_<film>.jpg` and keeps the camera's EXIF data.
+   The file is named `<photo>_<film>.jpg`, keeps the camera's EXIF data and records the film look,
+   like a desktop export.
 
 ## Building it yourself
 

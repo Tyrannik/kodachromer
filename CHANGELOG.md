@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Exports record their film look.** Every exported JPG now says which film and settings made it:
+  a one-line caption in the description (`Remjet look: Portra 400, lab scan, pushed 1 stop,
+  exposure +0.50 EV`), which Windows, Lightroom and most photo viewers show, and every setting in
+  the file's XMP. The new **Record film look** checkbox in the export panel (on by default; CLI:
+  `--no-look`) turns it off. This works for single and batch exports alike.
+- **More camera metadata is kept:** GPS position (if the camera recorded one; the M9 doesn't),
+  exposure program, metering mode, flash, maximum aperture, time zone, sub-second time and lens
+  serial number, alongside the camera, lens, date and exposure already copied. **Keep location**
+  (CLI: `--no-gps`) leaves the GPS position out, e.g. for photos you share online.
 - **Android app (experimental).** Open an M9 DNG on a phone, pick any film (or neutral), and export
   a JPEG at full (18 MP) or half (4.5 MP) size, with the camera's EXIF kept. It uses the same
   processing as the desktop app. Android 7.0 or newer; releases include

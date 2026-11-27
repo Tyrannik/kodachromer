@@ -1637,7 +1637,17 @@ impl FilmApp {
         ui.horizontal(|ui| {
             ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
             ui.checkbox(&mut opts.keep_exif, "Keep camera metadata (EXIF)");
-            theme::info(ui, "Copies the date, camera, lens and exposure settings from the DNG into the JPG. Off writes no metadata.");
+            theme::info(ui, "Copies the date, camera, lens, exposure settings and GPS position (if the camera recorded one) from the DNG into the JPG.");
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.add_enabled(opts.keep_exif, egui::Checkbox::new(&mut opts.keep_location, "Keep location"));
+            theme::info(ui, "Keeps the GPS position with the camera metadata. Turn off to leave out where the photo was taken, e.g. for photos you share online. The M9 records no GPS.");
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.checkbox(&mut opts.record_look, "Record film look");
+            theme::info(ui, "Writes the film and settings used into the JPG's description (\"Remjet look: Portra 400, lab scan, exposure +0.50 EV\") and every setting into its XMP, which Lightroom and most photo viewers show.");
         });
         ui.horizontal(|ui| {
             ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);

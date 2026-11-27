@@ -18,7 +18,7 @@ use jni::sys::{jboolean, jbyteArray, jint, jstring};
 use remjet_core::develop::{self, CameraImage, Quality};
 use remjet_core::edit::{self, Edit};
 use rawler::decoders::Orientation;
-use remjet_core::{exif, output, presets, raw};
+use remjet_core::{output, presets, raw};
 
 /// Long edge of the on-screen preview. Big enough for a phone screen, small
 /// enough that changing film re-renders in about a second on an old phone.
@@ -71,12 +71,13 @@ pub fn render_preview(path: &Path, name: &str, film: Option<&str>) -> Result<Vec
     let p = slot.as_ref().context("no photo loaded")?;
     let img = edit::render(&p.cam, &edit_for(film), p.scale, p.seed)?;
     let img = output::apply_orientation(img, p.orientation);
-    output::encode_jpeg(&img, 88, None)
+    output::encode_jpeg(&img, 88, None, None)
 }
 
 /// Render `path` with `film` and write a JPEG to `out`. `full` picks full
 /// resolution (18 MP on an M9) over half (4.5 MP, about a quarter of the
-/// memory and time). Camera metadata is copied across.
+/// memory and time). Camera metadata and the film look are recorded, as in
+/// a desktop export.
 pub fn export(path: &Path, name: &str, film: Option<&str>, out: &Path, full: bool, quality: u8) -> Result<()> {
     // Drop the preview cache: a full-size render needs every megabyte an
     // old phone has. It is rebuilt on the next preview.
@@ -91,11 +92,13 @@ pub fn export(path: &Path, name: &str, film: Option<&str>, out: &Path, full: boo
     let orientation = raw_image.orientation;
     drop(raw_image); // the raw samples aren't needed once demosaiced
     let scale = if full { 1.0 } else { 2.0 };
-    let img = edit::render(&cam, &edit_for(film), scale, edit::seed_for(Path::new(name)))?;
+    let look = edit_for(film);
+    let img = edit::render(&cam, &look, scale, edit::seed_for(Path::new(name)))?;
     drop(cam);
     let img = output::apply_orientation(img, orientation);
-    let meta = exif::read(path).ok();
-    output::write_jpeg_with_exif(&img, out, quality.clamp(1, 100), meta.as_ref())
+    // Same metadata as a desktop export: camera EXIF plus the film look.
+    let (meta, xmp) = edit::export_metadata(path, &look, &edit::ExportOptions::default());
+    output::write_jpeg_with_meta(&img, out, quality.clamp(1, 100), meta.as_ref(), xmp.as_deref())
 }
 
 /// Film list as "id\tname" lines, built-ins first.
